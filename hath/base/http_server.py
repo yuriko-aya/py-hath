@@ -603,111 +603,87 @@ class HTTPServer:
                     return False
             
             # Get certificate paths
-            cert_path, key_path = server_handler.get_certificate_paths()
-            p12_path = Settings.get_data_dir() / "client.p12"
+            p12_path, _ = server_handler.get_certificate_paths()
             
             # Create SSL context
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             
-            # Try to load PEM certificates first
+            # Load PKCS#12 certificate directly
             try:
-                if Path(cert_path).exists() and Path(key_path).exists():
-                    ssl_context.load_cert_chain(cert_path, key_path)
-                    Out.debug("Loaded PEM certificate for SSL")
-                else:
-                    raise FileNotFoundError("PEM files not available")
-            except Exception as e:
-                Out.debug(f"Failed to load PEM certificates: {e}")
-                
-                # Try to load PKCS#12 certificate
-                try:
-                    if p12_path.exists():
-                        from cryptography.hazmat.primitives.serialization import pkcs12
-                        from cryptography.hazmat.primitives import serialization
-                        import tempfile
+                if Path(p12_path).exists():
+                    from cryptography.hazmat.primitives.serialization import pkcs12
+                    from cryptography.hazmat.primitives import serialization
+                    import tempfile
+                    
+                    # Read PKCS#12 data
+                    with open(p12_path, 'rb') as f:
+                        p12_data = f.read()
+                    
+                    # Try loading with different passwords - client key is the primary password
+                    passwords_to_try = [
+                        Settings.get_client_key().encode(),  # Most likely - client key
+                        None, 
+                        b'', 
+                        str(Settings.get_client_id()).encode(),
+                        b'hentai@home'
+                    ]
+                    
+                    private_key = None
+                    certificate = None
+                    additional_certificates = None
+                    
+                    for password in passwords_to_try:
+                        try:
+                            private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+                                p12_data, password=password
+                            )
+                            Out.debug(f"Successfully loaded PKCS#12 for SSL with password: {'None' if password is None else 'provided'}")
+                            break
+                        except Exception as e:
+                            Out.debug(f"Failed to load PKCS#12 for SSL with password attempt: {e}")
+                            continue
+                    
+                    if not (private_key and certificate):
+                        raise Exception("Could not load certificate and private key from PKCS#12")
+                    
+                    # Create temporary PEM files for SSL context (including full chain if available)
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as cert_file:
+                        # Write the main certificate
+                        cert_file.write(certificate.public_bytes(serialization.Encoding.PEM))
                         
-                        # Read PKCS#12 data
-                        with open(p12_path, 'rb') as f:
-                            p12_data = f.read()
+                        # Add additional certificates to the chain if available
+                        if additional_certificates:
+                            for additional_cert in additional_certificates:
+                                cert_file.write(additional_cert.public_bytes(serialization.Encoding.PEM))
                         
-                        # Try loading with different passwords - including client key as password
-                        passwords_to_try = [
-                            None, 
-                            b'', 
-                            b'hentai@home',
-                            str(Settings.get_client_id()).encode(),
-                            Settings.get_client_key().encode(),
-                            b'changeit',  # Common default
-                            b'password'   # Common default
-                        ]
-                        
-                        private_key = None
-                        certificate = None
-                        
-                        for password in passwords_to_try:
-                            try:
-                                private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
-                                    p12_data, password=password
-                                )
-                                Out.debug(f"Successfully loaded PKCS#12 for SSL with password: {'None' if password is None else password.decode() if isinstance(password, bytes) else str(password)}")
-                                break
-                            except Exception as e:
-                                Out.debug(f"Failed to load PKCS#12 for SSL with password attempt: {e}")
-                                continue
-                        
-                        if not (private_key and certificate):
-                            # If PKCS#12 parsing fails, try loading as raw DER certificate
-                            Out.debug("PKCS#12 parsing failed, trying as raw DER certificate")
-                            try:
-                                from cryptography import x509
-                                from cryptography.hazmat.backends import default_backend
-                                
-                                # Try to load as DER-encoded certificate
-                                cert = x509.load_der_x509_certificate(p12_data, default_backend())
-                                
-                                # For SSL, we need both cert and key, but if this is just a cert, skip SSL
-                                Out.warning("Certificate loaded but no private key found - SSL disabled")
-                                return False
-                                
-                            except Exception as e2:
-                                Out.debug(f"Failed to load as DER certificate: {e2}")
-                                raise Exception("Could not load certificate in any format")
-                        
-                        # Create temporary PEM files for SSL context (including full chain if available)
-                        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as cert_file:
-                            # Write the main certificate
-                            cert_file.write(certificate.public_bytes(serialization.Encoding.PEM))
-                            
-                            # Add additional certificates to the chain if available
-                            if additional_certificates:
-                                for additional_cert in additional_certificates:
-                                    cert_file.write(additional_cert.public_bytes(serialization.Encoding.PEM))
-                            
-                            temp_cert_path = cert_file.name
-                        
-                        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.key') as key_file:
-                            key_file.write(private_key.private_bytes(
-                                encoding=serialization.Encoding.PEM,
-                                format=serialization.PrivateFormat.PKCS8,
-                                encryption_algorithm=serialization.NoEncryption()
-                            ))
-                            temp_key_path = key_file.name
-                        
-                        # Load into SSL context
-                        ssl_context.load_cert_chain(temp_cert_path, temp_key_path)
-                        
-                        # Clean up temporary files
-                        import os
+                        temp_cert_path = cert_file.name
+                    
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.key') as key_file:
+                        key_file.write(private_key.private_bytes(
+                            encoding=serialization.Encoding.PEM,
+                            format=serialization.PrivateFormat.PKCS8,
+                            encryption_algorithm=serialization.NoEncryption()
+                        ))
+                        temp_key_path = key_file.name
+                    
+                    # Load into SSL context
+                    ssl_context.load_cert_chain(temp_cert_path, temp_key_path)
+                    
+                    # Clean up temporary files
+                    import os
+                    try:
                         os.unlink(temp_cert_path)
                         os.unlink(temp_key_path)
-                        
-                        Out.debug("Loaded PKCS#12 certificate for SSL")
-                    else:
-                        raise FileNotFoundError("No certificate files available")
-                        
-                except Exception as e2:
-                    Out.error(f"Failed to load PKCS#12 certificate: {e2}")
-                    return False
+                    except:
+                        pass  # Ignore cleanup errors
+                    
+                    Out.debug("Loaded PKCS#12 certificate for SSL")
+                else:
+                    raise FileNotFoundError("PKCS#12 certificate file not found")
+                    
+            except Exception as e:
+                Out.error(f"Failed to configure SSL: {e}")
+                return False
             
             # Configure SSL settings for H@H
             ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
