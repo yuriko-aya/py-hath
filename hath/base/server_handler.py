@@ -326,64 +326,16 @@ class ServerHandler:
                 if cert_data and len(cert_data) > 100:  # Basic sanity check for certificate data
                     # Save PKCS#12 certificate to data directory
                     p12_path = Settings.get_data_dir() / "client.p12"
-                    cert_path = Settings.get_data_dir() / "client.crt"
-                    key_path = Settings.get_data_dir() / "client.key"
                     
                     # Save the PKCS#12 data
                     with open(p12_path, 'wb') as f:
                         f.write(cert_data)
                     
-                    # Try to extract PEM certificate and key from PKCS#12
-                    try:
-                        from cryptography.hazmat.primitives import serialization
-                        from cryptography.hazmat.primitives.serialization import pkcs12
-                        
-                        # Try different passwords for PKCS#12 (H@H typically uses empty password)
-                        passwords_to_try = [None, b'', b'hentai@home', str(Settings.get_client_id()).encode()]
-                        
-                        private_key = None
-                        certificate = None
-                        
-                        for password in passwords_to_try:
-                            try:
-                                private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
-                                    cert_data, password=password
-                                )
-                                Out.debug(f"Successfully loaded PKCS#12 with password: {'None' if password is None else 'provided'}")
-                                break
-                            except Exception as e:
-                                Out.debug(f"Failed to load PKCS#12 with password attempt: {e}")
-                                continue
-                        
-                        if private_key and certificate:
-                            # Write certificate in PEM format
-                            with open(cert_path, 'wb') as f:
-                                f.write(certificate.public_bytes(serialization.Encoding.PEM))
-                            
-                            # Write private key in PEM format
-                            with open(key_path, 'wb') as f:
-                                f.write(private_key.private_bytes(
-                                    encoding=serialization.Encoding.PEM,
-                                    format=serialization.PrivateFormat.PKCS8,
-                                    encryption_algorithm=serialization.NoEncryption()
-                                ))
-                            
-                            # Set appropriate permissions (readable only by owner)
-                            p12_path.chmod(0o600)
-                            cert_path.chmod(0o600)
-                            key_path.chmod(0o600)
-                            
-                            Out.info("SSL certificate (PKCS#12) downloaded and converted to PEM successfully")
-                            return True
-                        else:
-                            raise Exception("Could not extract certificate and key from PKCS#12")
-                        
-                    except Exception as e:
-                        Out.warning(f"Failed to convert PKCS#12 to PEM: {e}")
-                        # Fall back to just saving the raw PKCS#12 file
-                        p12_path.chmod(0o600)
-                        Out.info("SSL certificate (PKCS#12) downloaded successfully")
-                        return True
+                    # Set appropriate permissions (readable only by owner)
+                    p12_path.chmod(0o600)
+                    
+                    Out.info("SSL certificate (PKCS#12) downloaded successfully")
+                    return True
                 else:
                     Out.error("Invalid certificate data received from server")
                     return False
@@ -397,48 +349,45 @@ class ServerHandler:
     
     def get_certificate_paths(self) -> tuple:
         """Get paths to certificate and key files."""
-        cert_path = Settings.get_data_dir() / "client.crt"
-        key_path = Settings.get_data_dir() / "client.key"
-        return str(cert_path), str(key_path)
+        p12_path = Settings.get_data_dir() / "client.p12"
+        return str(p12_path), None  # Return PKCS#12 path and None for key path
     
     def is_certificate_valid(self) -> bool:
         """Check if SSL certificate exists and is valid."""
         try:
-            from cryptography import x509
-            from cryptography.hazmat.backends import default_backend
             from cryptography.hazmat.primitives.serialization import pkcs12
             import datetime
             
-            cert_path, _ = self.get_certificate_paths()
             p12_path = Settings.get_data_dir() / "client.p12"
             
-            # Try PEM certificate first
-            if Path(cert_path).exists():
-                try:
-                    with open(cert_path, 'rb') as f:
-                        cert_data = f.read()
-                        cert = x509.load_pem_x509_certificate(cert_data, default_backend())
-                        
-                        # Check if certificate is expired or expires soon (within 24 hours)
-                        now = datetime.datetime.now(datetime.timezone.utc)
-                        expires_soon = now + datetime.timedelta(hours=24)
-                        
-                        if cert.not_valid_after <= expires_soon:
-                            Out.info("SSL certificate is expired or expires soon")
-                            return False
-                        
-                        return True
-                except Exception as e:
-                    Out.debug(f"Failed to validate PEM certificate: {e}")
-            
-            # Try PKCS#12 certificate
+            # Check PKCS#12 certificate
             if p12_path.exists():
                 try:
                     with open(p12_path, 'rb') as f:
                         p12_data = f.read()
-                        private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
-                            p12_data, password=None
-                        )
+                        
+                        # Try different passwords for PKCS#12 (H@H uses client key as password)
+                        passwords_to_try = [
+                            Settings.get_client_key().encode(),  # Most likely - client key
+                            None, 
+                            b'', 
+                            str(Settings.get_client_id()).encode(),
+                            b'hentai@home'
+                        ]
+                        
+                        private_key = None
+                        certificate = None
+                        
+                        for password in passwords_to_try:
+                            try:
+                                private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+                                    p12_data, password=password
+                                )
+                                Out.debug(f"Successfully validated PKCS#12 with password: {'None' if password is None else 'provided'}")
+                                break
+                            except Exception as e:
+                                Out.debug(f"Failed to validate PKCS#12 with password attempt: {e}")
+                                continue
                         
                         if certificate:
                             # Check if certificate is expired or expires soon (within 24 hours)
