@@ -158,9 +158,20 @@ class Tools:
         try:
             # Ensure destination directory exists
             dst.parent.mkdir(parents=True, exist_ok=True)
-            src.rename(dst)
-            return True
-        except Exception:
+            
+            # Try rename first (fastest)
+            try:
+                src.rename(dst)
+                return True
+            except OSError:
+                # If rename fails (cross-filesystem), try copy + delete
+                import shutil
+                shutil.copy2(src, dst)
+                src.unlink()
+                return True
+                
+        except Exception as e:
+            Out.debug(f"Failed to move file {src} to {dst}: {e}")
             return False
     
     @staticmethod
