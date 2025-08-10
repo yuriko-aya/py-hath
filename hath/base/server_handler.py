@@ -392,13 +392,16 @@ class ServerHandler:
                         
                         if certificate:
                             # Check if certificate is expired or expires soon (within 24 hours)
-                            now = datetime.datetime.now(datetime.timezone.utc)
+                            # Use timezone-naive datetime to match certificate timestamps
+                            now = datetime.datetime.now()
                             expires_soon = now + datetime.timedelta(hours=24)
                             
+                            # Certificate timestamps are typically timezone-naive UTC
                             if certificate.not_valid_after <= expires_soon:
-                                Out.info("SSL certificate is expired or expires soon")
+                                Out.info(f"SSL certificate is expired or expires soon (expires: {certificate.not_valid_after})")
                                 return False
                             
+                            Out.debug(f"SSL certificate is valid until: {certificate.not_valid_after}")
                             return True
                 except Exception as e:
                     Out.debug(f"Failed to validate PKCS#12 certificate: {e}")
