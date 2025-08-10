@@ -44,7 +44,16 @@ class HentaiAtHomeClient:
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals."""
-        Out.info("Received shutdown signal")
+        Out.info(f"Received shutdown signal {signum}")
+        
+        # Try to save cache data immediately
+        if self.cache_handler:
+            try:
+                self.cache_handler.save_cache_state()
+                Out.info("Cache state saved before shutdown")
+            except Exception as e:
+                Out.error(f"Failed to save cache state during signal handling: {e}")
+        
         self.shutdown()
     
     def run(self):
@@ -174,6 +183,10 @@ class HentaiAtHomeClient:
         # Cache maintenance
         if self.cache_handler:
             self.cache_handler.cycle_lru_cache_table()
+            
+            # Save cache state periodically (every 30 cycles ~ 15 minutes)
+            if self.thread_skip_counter % 30 == 0:
+                self.cache_handler.save_cache_state()
             
             # Check free disk space
             for _ in range(self.cache_handler.get_prune_aggression()):

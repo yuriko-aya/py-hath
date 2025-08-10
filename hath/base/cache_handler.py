@@ -125,17 +125,26 @@ class CacheHandler:
             # Initialize cache from existing files
             self._startup_init_cache()
         
-        # Check if we have files but no static ranges
-        if self.cache_count > 0 and Settings.get_static_range_count() == 0:
-            error_msg = (
-                "This client has static ranges assigned to it, but the cache is empty. "
-                "Check file permissions and file system integrity.\n"
-                "If the cache has been deleted or is otherwise lost, you have to manually "
-                "reset your static ranges from the H@H settings page.\n"
-                f"https://e-hentai.org/hentaiathome.php?cid={Settings.get_client_id()}"
-            )
-            self.client.die_with_error(error_msg)
-            return
+        # Check if we have static ranges but no cached files (indicating a potential issue)
+        if self.cache_count == 0 and Settings.get_static_range_count() > 0:
+            # This is actually a warning, not an error - it's normal for a new client
+            Out.warning(f"CacheHandler: Client has {Settings.get_static_range_count()} static ranges assigned, but cache is empty")
+            Out.warning("This is normal for a new client. Files will be cached as requests are received.")
+        
+        # Check for inconsistent state: files in cache dir but zero count (indicates persistent data corruption)
+        if self.cache_count == 0:
+            # Quick check if there are actually files in cache directories
+            actual_file_count = 0
+            for cache_dir in Tools.list_sorted_dirs(self.cache_dir):
+                if Settings.is_static_range(cache_dir.name):
+                    files = Tools.list_sorted_files(cache_dir)
+                    actual_file_count += len([f for f in files if f.is_file()])
+            
+            if actual_file_count > 0:
+                Out.warning(f"CacheHandler: Found {actual_file_count} files on disk but cache count is 0")
+                Out.warning("This indicates persistent cache data corruption. Rescanning cache...")
+                # Force rescan by calling _startup_init_cache again
+                self._startup_init_cache()
         
         # Prune cache if over limit
         cache_limit = Settings.get_disk_limit_bytes()
@@ -277,24 +286,33 @@ class CacheHandler:
     
     def _prune_cache_to_limit(self, limit: int):
         """Prune cache until it's under the specified limit."""
+        if limit <= 0:
+            Out.warning("CacheHandler: Invalid cache limit (0 or negative), skipping pruning")
+            return
+            
         iterations = 0
         
         while self.get_cache_size_with_overhead() > limit:
             if iterations % 100 == 0:
-                percentage = 100.0 * self.get_cache_size_with_overhead() / limit
-                Out.info(f"CacheHandler: Cache is currently at {percentage:.2f}%")
+                current_size = self.get_cache_size_with_overhead()
+                percentage = 100.0 * current_size / limit
+                Out.info(f"CacheHandler: Cache is currently at {percentage:.2f}% ({Tools.format_bytes(current_size)} / {Tools.format_bytes(limit)})")
             
             # Simple pruning strategy: remove oldest files
             # In a real implementation, this would be more sophisticated
             if not self._prune_oldest_file():
+                Out.warning("CacheHandler: No more files to prune, stopping")
                 break
             
             iterations += 1
             
             if not self.recheck_free_disk_space():
+                Out.warning("CacheHandler: Disk space check failed, stopping pruning")
                 break
         
-        Out.info("CacheHandler: Finished startup cache pruning")
+        final_size = self.get_cache_size_with_overhead()
+        final_percentage = 100.0 * final_size / limit if limit > 0 else 0
+        Out.info(f"CacheHandler: Finished startup cache pruning - cache now at {final_percentage:.2f}% ({Tools.format_bytes(final_size)} / {Tools.format_bytes(limit)})")
     
     def _prune_oldest_file(self) -> bool:
         """Remove the oldest file from cache. Returns True if a file was removed."""
@@ -391,6 +409,12 @@ class CacheHandler:
             target_path = hv_file.get_local_file_ref()
             target_path.parent.mkdir(parents=True, exist_ok=True)
             
+            Out.debug(f"CacheHandler: Importing file {hv_file.file_id} from {temp_file} to {target_path}")
+            
+            if not temp_file.exists():
+                Out.warning(f"CacheHandler: Temporary file {temp_file} does not exist")
+                return False
+            
             if Tools.move_file(temp_file, target_path):
                 self._add_file_to_active_cache(hv_file)
                 self.mark_recently_accessed(hv_file, True)
@@ -400,9 +424,14 @@ class CacheHandler:
                 if static_range not in self.static_range_oldest:
                     self.static_range_oldest[static_range] = int(time.time() * 1000)
                 
+                Out.debug(f"CacheHandler: Successfully imported file {hv_file.file_id} to cache")
                 return True
+            else:
+                Out.warning(f"CacheHandler: Failed to move temp file {temp_file} to {target_path}")
+                return False
+                
         except Exception as e:
-            Out.warning(f"Failed to import file to cache: {e}")
+            Out.warning(f"CacheHandler: Failed to import file {hv_file.file_id} to cache: {e}")
         
         return False
     
@@ -425,7 +454,21 @@ class CacheHandler:
     def terminate_cache(self):
         """Terminate cache handler and save persistent data."""
         Out.info("CacheHandler: Terminating cache handler...")
-        self._save_persistent_data()
+        
+        # Ensure persistent data is saved
+        try:
+            self._save_persistent_data()
+            Out.info("CacheHandler: Persistent cache data saved successfully")
+        except Exception as e:
+            Out.error(f"CacheHandler: Failed to save persistent cache data during shutdown: {e}")
+    
+    def save_cache_state(self):
+        """Save current cache state to persistent storage (can be called periodically)."""
+        try:
+            self._save_persistent_data()
+            Out.debug("CacheHandler: Cache state saved to persistent storage")
+        except Exception as e:
+            Out.debug(f"CacheHandler: Failed to save cache state: {e}")
     
     def process_blacklist(self, deltatime: int):
         """Process blacklisted files (placeholder)."""
@@ -461,15 +504,31 @@ class CacheHandler:
         """Save persistent cache data to disk."""
         try:
             cache_info_file = Settings.get_temp_dir() / "pcache_info.dat"
+            
+            # Ensure the temp directory exists
+            Settings.get_temp_dir().mkdir(parents=True, exist_ok=True)
+            
             data = {
                 'cache_count': self.cache_count,
                 'cache_size': self.cache_size,
-                'static_range_oldest': self.static_range_oldest
+                'static_range_oldest': self.static_range_oldest,
+                'timestamp': time.time()  # Add timestamp for debugging
             }
-            with open(cache_info_file, 'wb') as f:
+            
+            # Write to temporary file first, then move to avoid corruption
+            temp_file = cache_info_file.with_suffix('.tmp')
+            with open(temp_file, 'wb') as f:
                 pickle.dump(data, f)
+            
+            # Atomic move
+            temp_file.replace(cache_info_file)
+            
+            Out.debug(f"CacheHandler: Saved persistent data - count: {self.cache_count}, size: {Tools.format_bytes(self.cache_size)}")
+            
         except Exception as e:
-            Out.debug(f"Failed to save persistent cache data: {e}")
+            Out.error(f"CacheHandler: Failed to save persistent cache data: {e}")
+            Out.debug(f"CacheHandler: Current state - count: {self.cache_count}, size: {self.cache_size}")
+            # Don't re-raise the exception - this shouldn't stop the client
     
     def _delete_persistent_data(self):
         """Delete persistent cache data files."""

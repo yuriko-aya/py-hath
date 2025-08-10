@@ -206,13 +206,15 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 return
             
             # Determine content type
-            content_type = self.guess_content_type(file_path.name)
+            content_type = self.guess_content_type(file_path.name, file_path)
             
             # Send headers
             self.send_response(200)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(hv_file.size))
             self.send_header('Accept-Ranges', 'bytes')
+            # Tell browser to display inline instead of downloading
+            self.send_header('Content-Disposition', 'inline')
             self.end_headers()
             
             # Send file content (only for GET, not HEAD)
@@ -251,12 +253,97 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "File not available")
                 return
             
-            # For now, send a simple response indicating proxy mode
-            # In a full implementation, this would stream the file from the source
-            self.send_response(502)
-            self.send_header('Content-Type', 'text/plain')
+            # Try to fetch the file from one of the source URLs
+            import requests
+            
+            file_data = None
+            content_type = 'application/octet-stream'
+            content_length = 0
+            
+            for source_url in sources:
+                try:
+                    Out.debug(f"Attempting to fetch file from: {source_url}")
+                    
+                    # Make request to source URL
+                    response = requests.get(source_url, timeout=30, stream=True)
+                    
+                    if response.status_code == 200:
+                        # Get content info
+                        content_type = response.headers.get('Content-Type', 'application/octet-stream')
+                        content_length = int(response.headers.get('Content-Length', 0))
+                        
+                        # Read the file data
+                        file_data = response.content
+                        
+                        Out.debug(f"Successfully fetched file from {source_url}, size: {len(file_data)} bytes")
+                        break
+                        
+                except Exception as e:
+                    Out.debug(f"Failed to fetch from {source_url}: {e}")
+                    continue
+            
+            if file_data is None:
+                Out.warning(f"Failed to fetch file {file_id} from any source URL")
+                self.send_error(502, "Failed to fetch file from upstream")
+                return
+            
+            # Send the file to client
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(file_data)))
+            self.send_header('Accept-Ranges', 'bytes')
+            # Tell browser to display inline instead of downloading
+            self.send_header('Content-Disposition', 'inline')
             self.end_headers()
-            self.wfile.write(b'Proxy mode not fully implemented')
+            
+            # Send file content (only for GET, not HEAD)
+            if self.command == 'GET':
+                self.wfile.write(file_data)
+            
+            # Cache the file for future requests
+            cache_handler = client.get_cache_handler()
+            if cache_handler and len(file_data) > 0:
+                try:
+                    import tempfile
+                    import hashlib
+                    from .cache_handler import HVFile
+                    
+                    # Calculate SHA1 hash of the file data
+                    sha1_hash = hashlib.sha1(file_data).hexdigest()
+                    
+                    # Create HVFile object
+                    hv_file = HVFile(file_id, len(file_data), sha1_hash)
+                    
+                    # Create temporary file in the cache directory to avoid cross-filesystem moves
+                    cache_dir = Settings.get_cache_dir()
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Write file data to a temporary file in the cache directory
+                    with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as temp_file:
+                        temp_file.write(file_data)
+                        temp_file_path = Path(temp_file.name)
+                    
+                    # Import the file to cache
+                    if cache_handler.import_file_to_cache(temp_file_path, hv_file):
+                        Out.debug(f"File {file_id} cached successfully (size: {len(file_data)} bytes)")
+                    else:
+                        Out.warning(f"Failed to cache file {file_id}")
+                        # Clean up temp file if caching failed
+                        try:
+                            temp_file_path.unlink()
+                        except Exception as cleanup_error:
+                            Out.debug(f"Failed to cleanup temp file: {cleanup_error}")
+                    
+                except Exception as e:
+                    Out.warning(f"Failed to cache proxied file {file_id}: {e}")
+                    # Make sure we don't leave temp files around
+                    try:
+                        if 'temp_file_path' in locals() and temp_file_path.exists():
+                            temp_file_path.unlink()
+                    except:
+                        pass
+            
+            Out.debug(f"Successfully served file {file_id} via proxy")
             
         except Exception as e:
             Out.error(f"Error serving file via proxy: {e}")
@@ -509,8 +596,9 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html.encode('utf-8'))
     
-    def guess_content_type(self, filename: str) -> str:
-        """Guess content type from filename."""
+    def guess_content_type(self, filename: str, file_path: Optional[Path] = None) -> str:
+        """Guess content type from filename or file magic bytes."""
+        # First try by extension
         extension = filename.lower().split('.')[-1] if '.' in filename else ''
         
         content_types = {
@@ -519,10 +607,40 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             'png': 'image/png',
             'gif': 'image/gif',
             'webp': 'image/webp',
-            'bmp': 'image/bmp'
+            'bmp': 'image/bmp',
+            'webm': 'video/webm',
+            'mp4': 'video/mp4'
         }
         
-        return content_types.get(extension, 'application/octet-stream')
+        if extension in content_types:
+            return content_types[extension]
+        
+        # If no extension, try to detect from file magic bytes (for cached H@H files)
+        if file_path and file_path.exists():
+            try:
+                with open(file_path, 'rb') as f:
+                    magic = f.read(16)  # Read first 16 bytes
+                
+                # Common image file signatures
+                if magic.startswith(b'\xFF\xD8\xFF'):  # JPEG
+                    return 'image/jpeg'
+                elif magic.startswith(b'\x89\x50\x4E\x47'):  # PNG
+                    return 'image/png'
+                elif magic.startswith(b'\x47\x49\x46\x38'):  # GIF
+                    return 'image/gif'
+                elif magic.startswith(b'RIFF') and b'WEBP' in magic:  # WebP
+                    return 'image/webp'
+                elif magic.startswith(b'\x42\x4D'):  # BMP
+                    return 'image/bmp'
+                elif magic.startswith(b'\x1A\x45\xDF\xA3'):  # WebM
+                    return 'video/webm'
+                elif magic.startswith(b'\x00\x00\x00\x20\x66\x74\x79\x70'):  # MP4
+                    return 'video/mp4'
+            except Exception:
+                pass  # Fall through to default
+        
+        # Default - for H@H files, assume JPEG if we can't determine
+        return 'image/jpeg'
     
     def log_message(self, format, *args):
         """Override log message to use our logging system."""

@@ -131,20 +131,21 @@ class ServerHandler:
     
     def get_static_range_fetch_url(self, fileindex: str, xres: str, fileid: str) -> Optional[List[str]]:
         """Get URLs for fetching a file from static ranges."""
-        params = {
-            'fileindex': fileindex,
-            'xres': xres,
-            'fileid': fileid
-        }
-        response = self._get_server_response(self.ACT_STATIC_RANGE_FETCH, params)
+        # Java: getServerConnectionURL(ACT_STATIC_RANGE_FETCH, fileindex + ";" + xres + ";" + fileid)
+        add_param = f"{fileindex};{xres};{fileid}"
+        
+        response = self._get_server_response(self.ACT_STATIC_RANGE_FETCH, {'add': add_param})
         
         if response and response.get('status') == 'OK':
             response_text = response.get('response_text', '')
             urls = []
             for line in response_text.split('\n'):
-                if line.startswith('http'):
-                    urls.append(line.strip())
+                line = line.strip()
+                if line and line.startswith('http'):
+                    urls.append(line)
             return urls if urls else None
+        else:
+            Out.info(f"Failed to request static range download link for {fileid}.")
         return None
     
     def _get_server_response(self, action: str, extra_params: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
