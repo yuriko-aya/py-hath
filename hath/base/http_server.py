@@ -19,6 +19,9 @@ from .settings import Settings
 class HTTPRequestHandler(BaseHTTPRequestHandler):
     """Custom HTTP request handler for Hentai@Home."""
     
+    # Override the default server signature
+    server_version = f"Genetic Lifeform and Distributed Open Server/{Settings.CLIENT_VERSION}"
+    
     def __init__(self, *args, **kwargs):
         self.hath_server = None
         super().__init__(*args, **kwargs)
@@ -215,6 +218,8 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             self.send_header('Accept-Ranges', 'bytes')
             # Tell browser to display inline instead of downloading
             self.send_header('Content-Disposition', 'inline')
+            # Cache for one year (31536000 seconds)
+            self.send_header('Cache-Control', 'public, max-age=31536000')
             self.end_headers()
             
             # Send file content (only for GET, not HEAD)
@@ -294,6 +299,8 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             self.send_header('Accept-Ranges', 'bytes')
             # Tell browser to display inline instead of downloading
             self.send_header('Content-Disposition', 'inline')
+            # Cache for one year (31536000 seconds)
+            self.send_header('Cache-Control', 'public, max-age=31536000')
             self.end_headers()
             
             # Send file content (only for GET, not HEAD)
