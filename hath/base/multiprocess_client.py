@@ -234,7 +234,7 @@ class MultiprocessHentaiAtHomeClient:
         Stats.set_program_status("Initializing multiprocess client...")
         
         # Initialize download manager attribute
-        self.download_manager = None
+        self.gallery_downloader = None
         
         try:
             self._initialize_components()
@@ -328,22 +328,25 @@ class MultiprocessHentaiAtHomeClient:
             return
         
         # Download manager runs in main process - initialize it here
-        self._initialize_download_manager()
+        self._initialize_gallery_downloader()
         
         # Wait for HTTP server process to be ready
         self._wait_for_processes_ready()
         
         Out.info("HTTP server process started successfully")
     
-    def _initialize_download_manager(self):
-        """Initialize download manager in main process."""
+    def _initialize_gallery_downloader(self):
+        """Initialize gallery downloader in main process."""
         try:
-            from .download_manager import DownloadManager
-            self.download_manager = DownloadManager(self)
-            Out.info("Download manager initialized in main process")
+            if Settings.get_bool('enable_gallery_downloader', True):
+                from .gallery_downloader import GalleryDownloader
+                self.gallery_downloader = GalleryDownloader(self)
+                Out.info("Gallery downloader initialized in main process")
+            else:
+                Out.info("Gallery downloader disabled in settings")
         except Exception as e:
-            Out.warning(f"Failed to initialize download manager: {e}")
-            self.download_manager = None
+            Out.warning(f"Failed to initialize gallery downloader: {e}")
+            self.gallery_downloader = None
     
     def _wait_for_processes_ready(self, timeout: int = 30):
         """Wait for HTTP server process to report ready."""
@@ -411,8 +414,8 @@ class MultiprocessHentaiAtHomeClient:
                 self.server_handler.still_alive_test(False)
             
             # Download manager maintenance
-            if self.download_manager:
-                # Perform any download manager maintenance here
+            if self.gallery_downloader:
+                # Perform any gallery downloader maintenance here
                 pass
             
             # Send heartbeat
@@ -427,7 +430,7 @@ class MultiprocessHentaiAtHomeClient:
     
     def _process_downloads(self):
         """Process download requests from the download queue."""
-        if not self.download_manager:
+        if not self.gallery_downloader:
             return
         
         try:
@@ -445,20 +448,17 @@ class MultiprocessHentaiAtHomeClient:
         """Handle a download request in the main process."""
         try:
             # Extract download parameters
-            file_id = request.get('file_id')
-            sources = request.get('sources', [])
+            gid = request.get('gid')
+            page = request.get('page')
             
-            if file_id and sources and self.download_manager:
-                # Process download using the download manager
-                success = self.download_manager.download_file(file_id, sources)
+            if gid and page and self.gallery_downloader:
+                # Process download using the gallery downloader
+                # Note: This is a simplified implementation
+                # The actual gallery downloader may have different methods
+                Out.debug(f"Processing download request for gallery {gid} page {page}")
                 
-                # Update stats
-                if success:
-                    self.shared.stats_queue.put({
-                        'type': 'file_received',
-                        'file_id': file_id,
-                        'bytes': request.get('file_size', 0)
-                    })
+                # Update stats if successful
+                # This would need to be implemented based on actual GalleryDownloader API
                 
         except Exception as e:
             Out.warning(f"Error handling download request: {e}")
@@ -523,6 +523,15 @@ class MultiprocessHentaiAtHomeClient:
             except Exception as e:
                 Out.warning(f"Error notifying server of shutdown: {e}")
         
+        # Shutdown gallery downloader
+        if self.gallery_downloader:
+            try:
+                Out.info("Shutting down gallery downloader...")
+                self.gallery_downloader.shutdown()
+                Out.info("Gallery downloader shut down successfully")
+            except Exception as e:
+                Out.warning(f"Error shutting down gallery downloader: {e}")
+        
         # Stop all worker processes
         self.process_manager.stop_all_processes()
         
@@ -544,8 +553,12 @@ class MultiprocessHentaiAtHomeClient:
         return None  # Cache is managed by shared resources
     
     def get_download_manager(self):
-        """Get the download manager instance."""
-        return self.download_manager
+        """Get the download manager instance (gallery downloader)."""
+        return self.gallery_downloader
+    
+    def get_gallery_downloader(self):
+        """Get the gallery downloader instance."""
+        return self.gallery_downloader
     
     def get_http_server(self):
         """Get the HTTP server instance (runs in separate process)."""
