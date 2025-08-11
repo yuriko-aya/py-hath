@@ -2,10 +2,14 @@
 HTTP server for serving cached files and handling requests.
 """
 
+import email.utils
+import random
 import ssl
 import socket
+import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from http.server import HTTPServer as BaseHTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -341,7 +345,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         if_modified_since = self.headers.get('If-Modified-Since')
         if if_modified_since:
             try:
-                import email.utils
                 client_time = email.utils.parsedate_to_datetime(if_modified_since).timestamp()
                 # Only compare to second precision (HTTP dates don't include milliseconds)
                 if int(last_modified) <= int(client_time):
@@ -360,7 +363,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     def serve_full_file(self, file_path: Path, file_size: int, content_type: str, 
                        last_modified: float, etag: str):
         """Serve a complete file with proper headers."""
-        import email.utils
         
         # Send headers
         self.send_response(200)
@@ -382,7 +384,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     def serve_range_request(self, file_path: Path, file_size: int, content_type: str,
                            last_modified: float, etag: str, range_header: str):
         """Serve a partial file response (HTTP 206)."""
-        import email.utils
         
         try:
             # Parse range header: "bytes=start-end"
@@ -472,8 +473,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     def serve_multipart_ranges(self, file_path: Path, file_size: int, content_type: str,
                               last_modified: float, etag: str, ranges: list):
         """Serve multiple ranges as multipart/byteranges."""
-        import email.utils
-        import uuid
         
         # Generate boundary
         boundary = f"----boundary_{uuid.uuid4().hex}"
@@ -534,7 +533,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                     
                     # Apply bandwidth throttling
                     if bandwidth_monitor:
-                        bandwidth_monitor.throttle_bandwidth(len(data))
+                        bandwidth_monitor.wait_for_quota(len(data))
                     
                     # Send data
                     self.wfile.write(data)
@@ -563,7 +562,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             
             # Apply bandwidth throttling
             if bandwidth_monitor:
-                bandwidth_monitor.throttle_bandwidth(len(data))
+                bandwidth_monitor.wait_for_quota(len(data))
             
             # Send data
             self.wfile.write(data)
@@ -765,7 +764,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 break
             
             # Apply bandwidth throttling
-            self.bandwidth_monitor.throttle_bandwidth(len(data))
+            self.bandwidth_monitor.wait_for_quota(len(data))
             
             # Send data to client
             try:
@@ -782,10 +781,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 Out.warning(f"Error writing proxy data to client: {e}")
                 break
-                
-        except Exception as e:
-            Out.warning(f"Error serving proxy file {file_id}: {e}")
-            self.send_error(500, "Internal server error")
     
     
     def send_data_with_throttling(self, data: bytes):
@@ -801,7 +796,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
                 # Apply bandwidth throttling
                 if bandwidth_monitor:
-                    bandwidth_monitor.throttle_bandwidth(len(chunk))
+                    bandwidth_monitor.wait_for_quota(len(chunk))
                 
                 # Send chunk
                 self.wfile.write(chunk)
@@ -856,7 +851,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             
             if self.command == 'GET':
                 # Send random test data (matching Java HTTPResponseProcessorSpeedtest)
-                import random
                 random_length = 8192
                 random_bytes = bytes([random.randint(0, 255) for _ in range(random_length)])
                 
