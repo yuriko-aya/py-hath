@@ -208,26 +208,24 @@ class MultiprocessHTTPServer:
     def _configure_ssl(self) -> bool:
         """Configure SSL/TLS for the multiprocess server."""
         try:
-            # Get server handler to check/download certificate
-            client = Settings.get_active_client()
-            if not client:
-                Out.error("No active client available for SSL configuration")
-                return False
+            # Check if we have SSL configuration in shared resources
+            with self.shared.settings_lock:
+                client_key = self.shared.client_settings.get('client_key')
+                client_id = self.shared.client_settings.get('client_id')
+                data_dir = self.shared.client_settings.get('data_dir', 'data')
             
-            server_handler = client.get_server_handler()
-            if not server_handler:
-                Out.error("No server handler available for SSL configuration")
+            if not client_key or not client_id:
+                Out.error("SSL configuration missing client credentials")
                 return False
-            
-            # Check if certificate is valid, download if needed
-            if not server_handler.is_certificate_valid():
-                Out.info("SSL certificate invalid or missing, downloading from server...")
-                if not server_handler.download_certificate():
-                    Out.error("Failed to download SSL certificate")
-                    return False
             
             # Get certificate paths
-            p12_path, _ = server_handler.get_certificate_paths()
+            data_path = Path(data_dir)
+            p12_path = data_path / "client.p12"
+            
+            if not p12_path.exists():
+                Out.error(f"SSL certificate not found at {p12_path}")
+                Out.error("Certificate must be downloaded by main process before starting HTTP server")
+                return False
             
             # Create SSL context
             ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -244,10 +242,10 @@ class MultiprocessHTTPServer:
                     
                     # Try loading with different passwords - client key is the primary password
                     passwords_to_try = [
-                        Settings.get_client_key().encode(),  # Most likely - client key
+                        client_key.encode(),  # Most likely - client key
                         None, 
                         b'', 
-                        str(Settings.get_client_id()).encode(),
+                        str(client_id).encode(),
                         b'hentai@home'
                     ]
                     

@@ -204,6 +204,10 @@ class MultiprocessHentaiAtHomeClient:
         self.server_handler = None
         self.stats_collector = None
         
+        # Track server notifications to prevent duplicates
+        self.startup_notified = False
+        self.shutdown_notified = False
+        
         # Set up signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -260,6 +264,22 @@ class MultiprocessHentaiAtHomeClient:
         
         # Load settings from server
         self.server_handler.load_client_settings_from_server()
+        
+        # Ensure SSL certificate is available before starting HTTP server
+        if not self.server_handler.is_certificate_valid():
+            Out.info("SSL certificate invalid or missing, downloading from server...")
+            if not self.server_handler.download_certificate():
+                Out.error("Failed to download SSL certificate")
+                self.die_with_error("SSL certificate required for HTTPS server")
+        
+        # Share SSL configuration with HTTP server process
+        with self.shared.settings_lock:
+            self.shared.client_settings.update({
+                'client_key': Settings.get_client_key(),
+                'client_id': Settings.get_client_id(),
+                'data_dir': str(Settings.get_data_dir()),
+                'client_port': Settings.get_client_port()
+            })
         
         # Start stats collector
         self._start_stats_collector()
@@ -370,12 +390,18 @@ class MultiprocessHentaiAtHomeClient:
         Out.info("Starting main control loop")
         
         # Notify server of startup completion
-        if self.server_handler:
-            if not self.server_handler.notify_start():
+        if self.server_handler and not self.startup_notified:
+            if self.server_handler.notify_start():
+                self.startup_notified = True
+                Out.info("Server notified of startup")
+            else:
                 Out.warning("Failed to notify server of startup")
         
         # Update status
         Stats.set_program_status("Running in multiprocess mode")
+        
+        # Set flag to prevent child processes from sending notifications
+        self.shared.client_settings['is_main_process'] = True
         
         last_maintenance = 0
         maintenance_interval = 30  # seconds
@@ -517,9 +543,13 @@ class MultiprocessHentaiAtHomeClient:
         self.shutdown_flag = True
         
         # Notify server of shutdown
-        if self.server_handler:
+        if self.server_handler and not self.shutdown_notified:
             try:
-                self.server_handler.notify_shutdown()
+                if self.server_handler.notify_shutdown():
+                    self.shutdown_notified = True
+                    Out.info("Server notified of shutdown")
+                else:
+                    Out.warning("Failed to notify server of shutdown")
             except Exception as e:
                 Out.warning(f"Error notifying server of shutdown: {e}")
         
@@ -575,6 +605,10 @@ def http_server_process_main(shared_resources: SharedResources):
         # Set up logging for this process
         Out.setup_process_logging("http_server")
         Out.info("HTTP server process starting...")
+        
+        # IMPORTANT: Clear active client to prevent duplicate server notifications
+        # Only the main process should send server notifications
+        Settings.set_active_client(None)
         
         # Import in process to avoid import issues
         from .multiprocess_http_server import MultiprocessHTTPServer
