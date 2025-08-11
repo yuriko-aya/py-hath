@@ -34,12 +34,26 @@ sys.path.insert(0, str(project_root))
 def main():
     """Main entry point for the Hentai@Home client."""
     try:
-        from hath.base.hentai_at_home_client import HentaiAtHomeClient
-        from hath.base.input_query_handler_cli import InputQueryHandlerCLI
+        # Check for multiprocess mode flag
+        multiprocess_mode = '--multiprocess' in sys.argv or '--mp' in sys.argv
         
-        iqh = InputQueryHandlerCLI()
-        client = HentaiAtHomeClient(iqh, sys.argv[1:])
-        client.run()
+        if multiprocess_mode:
+            print("Starting Hentai@Home client in multiprocess mode...")
+            from hath.base.multiprocess_client import MultiprocessHentaiAtHomeClient
+            from hath.base.input_query_handler_cli import InputQueryHandlerCLI
+            
+            iqh = InputQueryHandlerCLI()
+            client = MultiprocessHentaiAtHomeClient(iqh, sys.argv[1:])
+            client.run()
+        else:
+            print("Starting Hentai@Home client in single-process mode...")
+            from hath.base.hentai_at_home_client import HentaiAtHomeClient
+            from hath.base.input_query_handler_cli import InputQueryHandlerCLI
+            
+            iqh = InputQueryHandlerCLI()
+            client = HentaiAtHomeClient(iqh, sys.argv[1:])
+            client.run()
+            
     except KeyboardInterrupt:
         print("\nShutdown requested by user")
         sys.exit(0)

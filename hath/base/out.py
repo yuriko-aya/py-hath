@@ -141,3 +141,46 @@ class Out:
     def get_logerr_count(cls) -> int:
         """Get the number of error messages."""
         return cls._logerr_count
+    
+    @classmethod
+    def setup_process_logging(cls, process_name: str):
+        """Set up logging for a multiprocess worker."""
+        if cls._logger is None:
+            cls._logger = logging.getLogger(f'hath.{process_name}')
+            cls._logger.setLevel(logging.DEBUG)
+            
+            # Console handler with process name
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_formatter = logging.Formatter(
+                f'%(asctime)s [{process_name}] [%(levelname)s] %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            console_handler.setFormatter(console_formatter)
+            
+            # Set console level based on debug mode
+            from .settings import Settings
+            if Settings.get_bool('debug_mode', False):
+                console_handler.setLevel(logging.DEBUG)
+            else:
+                console_handler.setLevel(logging.INFO)
+            
+            cls._logger.addHandler(console_handler)
+            
+            # File handler with process name in filename
+            try:
+                log_dir = Settings.get_log_dir()
+                log_file = log_dir / f"log_{process_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                
+                cls._log_file_handler = logging.FileHandler(log_file, encoding='utf-8')
+                file_formatter = logging.Formatter(
+                    f'%(asctime)s [{process_name}] [%(levelname)s] %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S'
+                )
+                cls._log_file_handler.setFormatter(file_formatter)
+                cls._log_file_handler.setLevel(logging.DEBUG)
+                cls._logger.addHandler(cls._log_file_handler)
+                
+            except Exception as e:
+                print(f"Warning: Could not set up file logging for {process_name}: {e}")
+        
+        cls.info(f"Process {process_name} logging initialized")
