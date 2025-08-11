@@ -579,7 +579,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             cache_handler.mark_recently_accessed(hv_file)
     
     def serve_file_via_proxy(self, fileindex: str, xres: str, file_id: str):
-        """Serve a file by proxying from the server using streaming download."""
+        """Serve a file by downloading it fully into memory first."""
         try:
             # Get server handler
             client = Settings.get_active_client()
@@ -604,184 +604,213 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "File info not available")
                 return
             
-            # Use streaming proxy downloader
-            from .proxy_file_downloader import ProxyFileDownloader
+            # Download file completely into memory
+            file_data = self._download_file_to_memory(sources, file_id, hv_file)
             
-            proxy_downloader = ProxyFileDownloader(
-                file_id=file_id,
-                sources=sources,
-                expected_size=hv_file.getSize(),
-                expected_hash=hv_file.getHash()
-            )
-            
-            # Initialize the download
-            status_code = proxy_downloader.initialize()
-            
-            if status_code != 200:
-                Out.warning(f"Failed to initialize proxy download for file {file_id}")
-                self.send_error(status_code, "Failed to initialize proxy download")
+            if file_data is None:
+                self.send_error(404, "Failed to download file")
                 return
+            
+            # Determine content type from file ID
+            content_type = self._guess_content_type_from_file_id(file_id)
+            
+            # Generate ETag from file hash
+            etag = f'"{hv_file.getHash()[:16]}"'
+            last_modified = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())
+            
+            # Handle conditional requests
+            if self.handle_conditional_request(time.time(), etag):
+                return  # 304 Not Modified sent
             
             # Check if this is a Range request
             range_header = self.headers.get('Range')
-            if range_header:
-                self._serve_proxy_range_request(proxy_downloader, hv_file, range_header)
+            if range_header and range_header.startswith('bytes='):
+                self._serve_proxy_range_from_memory(file_data, content_type, etag, last_modified, range_header)
             else:
-                self._serve_proxy_full_file(proxy_downloader, hv_file)
+                self._serve_proxy_full_from_memory(file_data, content_type, etag, last_modified)
                 
         except Exception as e:
             Out.warning(f"Error serving proxy file {file_id}: {e}")
             self.send_error(500, "Internal server error")
     
-    def _serve_proxy_full_file(self, proxy_downloader, hv_file):
-        """Serve the full proxy file with streaming."""
-        try:
-            # Send response headers
-            self.send_response(200)
-            self.send_header('Content-Type', proxy_downloader.get_content_type())
-            self.send_header('Content-Length', str(proxy_downloader.get_content_length()))
-            self.send_header('Accept-Ranges', 'bytes')
-            
-            # Add caching headers
-            last_modified = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())
-            self.send_header('Last-Modified', last_modified)
-            
-            # Generate ETag from file info
-            etag = f'"{hv_file.getHash()[:16]}"'
-            self.send_header('ETag', etag)
-            self.send_header('Cache-Control', 'public, max-age=86400')
-            
-            self.end_headers()
-            
-            # Stream the file data
-            self._stream_proxy_data(proxy_downloader, 0, proxy_downloader.get_content_length() - 1)
-            
-        except Exception as e:
-            Out.warning(f"Error serving full proxy file: {e}")
-            raise
-        finally:
-            proxy_downloader.proxy_thread_completed()
-    
-    def _serve_proxy_range_request(self, proxy_downloader, hv_file, range_header: str):
-        """Serve a range request for a proxy file."""
-        try:
-            file_size = proxy_downloader.get_content_length()
-            ranges = self._parse_range_header(range_header, file_size)
-            
-            if not ranges:
-                # Invalid range
-                self.send_response(416)  # Range Not Satisfiable
-                self.send_header('Content-Range', f'bytes */{file_size}')
-                self.end_headers()
-                return
-            
-            if len(ranges) == 1:
-                # Single range
-                start, end = ranges[0]
-                content_length = end - start + 1
-                
-                self.send_response(206)  # Partial Content
-                self.send_header('Content-Type', proxy_downloader.get_content_type())
-                self.send_header('Content-Length', str(content_length))
-                self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
-                self.send_header('Accept-Ranges', 'bytes')
-                
-                # Add caching headers
-                last_modified = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())
-                self.send_header('Last-Modified', last_modified)
-                
-                etag = f'"{hv_file.getHash()[:16]}"'
-                self.send_header('ETag', etag)
-                
-                self.end_headers()
-                
-                # Stream the range
-                self._stream_proxy_data(proxy_downloader, start, end)
-                
-            else:
-                # Multiple ranges - use multipart response
-                boundary = f"boundary{time.time()}"
-                
-                self.send_response(206)
-                self.send_header('Content-Type', f'multipart/byteranges; boundary={boundary}')
-                
-                # Calculate total content length for multipart response
-                total_length = 0
-                for start, end in ranges:
-                    part_length = end - start + 1
-                    part_header = (
-                        f"\r\n--{boundary}\r\n"
-                        f"Content-Type: {proxy_downloader.get_content_type()}\r\n"
-                        f"Content-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
-                    )
-                    total_length += len(part_header.encode()) + part_length
-                
-                # Add final boundary
-                total_length += len(f"\r\n--{boundary}--\r\n".encode())
-                
-                self.send_header('Content-Length', str(total_length))
-                self.end_headers()
-                
-                # Send multipart data
-                for start, end in ranges:
-                    part_header = (
-                        f"\r\n--{boundary}\r\n"
-                        f"Content-Type: {proxy_downloader.get_content_type()}\r\n"
-                        f"Content-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
-                    )
-                    self.wfile.write(part_header.encode())
-                    self._stream_proxy_data(proxy_downloader, start, end)
-                
-                # Send final boundary
-                self.wfile.write(f"\r\n--{boundary}--\r\n".encode())
-                
-        except Exception as e:
-            Out.warning(f"Error serving proxy range request: {e}")
-            raise
-        finally:
-            proxy_downloader.proxy_thread_completed()
-    
-    def _stream_proxy_data(self, proxy_downloader, start_byte: int, end_byte: int):
-        """Stream data from proxy downloader to client."""
-        chunk_size = 8192
-        current_pos = start_byte
+    def _download_file_to_memory(self, sources: list, file_id: str, hv_file) -> bytes:
+        """Download file completely into memory from source URLs."""
+        import requests
+        from .tools import Tools
         
-        while current_pos <= end_byte:
-            # Calculate chunk size for this iteration
-            remaining = end_byte - current_pos + 1
-            read_size = min(chunk_size, remaining)
-            
-            # Wait for data to be available
-            if not proxy_downloader.wait_for_bytes(current_pos + read_size - 1, timeout=30.0):
-                Out.warning(f"Timeout waiting for proxy data at position {current_pos}")
-                break
-            
-            # Read data from proxy downloader
-            data = proxy_downloader.read_range(current_pos, current_pos + read_size - 1)
-            
-            if not data:
-                Out.warning(f"No data available from proxy downloader at position {current_pos}")
-                break
-            
-            # Apply bandwidth throttling
-            self.bandwidth_monitor.wait_for_quota(len(data))
-            
-            # Send data to client
+        for source_url in sources:
             try:
-                self.wfile.write(data)
-                self.wfile.flush()
-                current_pos += len(data)
+                Out.debug(f"Downloading file {file_id} from {source_url}")
+                
+                # Prepare request headers
+                headers = {
+                    'Hath-Request': f"{Settings.getClientID()}-{Tools.getSHA1String(Settings.getClientKey() + file_id)}",
+                    'User-Agent': f"Hentai@Home {Settings.CLIENT_VERSION}"
+                }
+                
+                # Get proxy configuration
+                proxy_config = None
+                proxy_host = Settings.getImageProxy()
+                if proxy_host:
+                    proxy_config = {'http': proxy_host, 'https': proxy_host}
+                
+                # Download the file
+                response = requests.get(
+                    source_url,
+                    headers=headers,
+                    proxies=proxy_config,
+                    timeout=30
+                )
+                
+                if response.status_code != 200:
+                    Out.warning(f"Download failed with status {response.status_code}")
+                    continue
+                
+                file_data = response.content
+                
+                # Validate file size
+                if len(file_data) != hv_file.getSize():
+                    Out.warning(f"Downloaded file size mismatch: {len(file_data)} != {hv_file.getSize()}")
+                    continue
+                
+                # Validate file hash
+                import hashlib
+                actual_hash = hashlib.sha1(file_data).hexdigest()
+                if actual_hash != hv_file.getHash():
+                    Out.warning(f"Downloaded file hash mismatch: {actual_hash} != {hv_file.getHash()}")
+                    continue
+                
+                Out.debug(f"Successfully downloaded file {file_id} ({len(file_data)} bytes)")
                 
                 # Update stats
-                Stats.bytesSent(len(data))
+                Stats.fileRcvd()
+                Stats.bytesRcvd(len(file_data))
                 
-            except BrokenPipeError:
-                Out.debug("Client disconnected during proxy streaming")
-                break
+                return file_data
+                
             except Exception as e:
-                Out.warning(f"Error writing proxy data to client: {e}")
-                break
+                Out.warning(f"Failed to download from {source_url}: {e}")
+                continue
+        
+        return None
     
+    def _guess_content_type_from_file_id(self, file_id: str) -> str:
+        """Guess content type from file ID extension."""
+        # Extract file type from file ID (format: hash-size-type or hash-size-xres-yres-type)
+        parts = file_id.split('-')
+        if len(parts) >= 3:
+            file_type = parts[-1]  # Last part is the file type
+            
+            content_types = {
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg', 
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'webp': 'image/webp',
+                'wbp': 'image/webp',
+                'avf': 'image/avif',
+                'jxl': 'image/jxl',
+                'mp4': 'video/mp4',
+                'wbm': 'video/webm'
+            }
+            
+            return content_types.get(file_type, 'application/octet-stream')
+        
+        return 'application/octet-stream'
+    
+    def _serve_proxy_full_from_memory(self, file_data: bytes, content_type: str, etag: str, last_modified: str):
+        """Serve the full file from memory."""
+        # Send response headers
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(file_data)))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Last-Modified', last_modified)
+        self.send_header('ETag', etag)
+        self.send_header('Cache-Control', 'public, max-age=86400')
+        self.send_header('Content-Disposition', 'inline')
+        self.end_headers()
+        
+        # Send file data
+        if self.command == 'GET':
+            self.send_data_with_throttling(file_data)
+            Stats.fileSent()
+    
+    def _serve_proxy_range_from_memory(self, file_data: bytes, content_type: str, etag: str, last_modified: str, range_header: str):
+        """Serve a range request from memory."""
+        file_size = len(file_data)
+        ranges = self.parse_range_header(range_header, file_size)
+        
+        if not ranges:
+            # Invalid range
+            self.send_response(416)  # Range Not Satisfiable
+            self.send_header('Content-Range', f'bytes */{file_size}')
+            self.send_header('Content-Type', content_type)
+            self.end_headers()
+            return
+        
+        if len(ranges) == 1:
+            # Single range
+            start, end = ranges[0]
+            content_length = end - start + 1
+            
+            self.send_response(206)  # Partial Content
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(content_length))
+            self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Last-Modified', last_modified)
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', 'public, max-age=86400')
+            self.end_headers()
+            
+            # Send range data
+            if self.command == 'GET':
+                range_data = file_data[start:end + 1]
+                self.send_data_with_throttling(range_data)
+                Stats.fileSent()
+        else:
+            # Multiple ranges - use multipart/byteranges
+            import uuid
+            boundary = f"----boundary_{uuid.uuid4().hex}"
+            
+            # Calculate total content length
+            content_length = 0
+            for start, end in ranges:
+                range_header_text = f"Content-Type: {content_type}\r\nContent-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
+                content_length += len(f"--{boundary}\r\n") + len(range_header_text) + (end - start + 1) + len("\r\n")
+            content_length += len(f"--{boundary}--\r\n")
+            
+            # Send headers
+            self.send_response(206)  # Partial Content
+            self.send_header('Content-Type', f'multipart/byteranges; boundary={boundary}')
+            self.send_header('Content-Length', str(content_length))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Last-Modified', last_modified)
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', 'public, max-age=86400')
+            self.end_headers()
+            
+            # Send multipart content
+            if self.command == 'GET':
+                multipart_data = b""
+                for start, end in ranges:
+                    # Add boundary and headers
+                    boundary_data = f"--{boundary}\r\nContent-Type: {content_type}\r\nContent-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
+                    multipart_data += boundary_data.encode('utf-8')
+                    
+                    # Add range data
+                    multipart_data += file_data[start:end + 1]
+                    
+                    # Add CRLF after each part
+                    multipart_data += b"\r\n"
+                
+                # Add final boundary
+                final_boundary = f"--{boundary}--\r\n"
+                multipart_data += final_boundary.encode('utf-8')
+                
+                self.send_data_with_throttling(multipart_data)
+                Stats.fileSent()
     
     def send_data_with_throttling(self, data: bytes):
         """Send data with bandwidth throttling and stats tracking."""

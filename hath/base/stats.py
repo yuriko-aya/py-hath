@@ -297,6 +297,38 @@ class Stats:
         """Get total bytes received."""
         with cls._lock:
             return cls._bytes_received
+
+    # Java compatibility methods for proxy and download code
+    @classmethod
+    def bytes_received(cls, n: int):
+        """Java compatibility: increment bytes received."""
+        cls.add_bytes_received(n)
+
+    @classmethod
+    def bytes_sent(cls, n: int):
+        """Java compatibility: increment bytes sent."""
+        cls.add_bytes_sent(n)
+    
+    # Java compatibility methods
+    @classmethod
+    def fileSent(cls):
+        """Increment files sent counter (Java compatibility method)."""
+        cls.file_sent()
+    
+    @classmethod
+    def fileRcvd(cls):
+        """Increment files received counter (Java compatibility method)."""
+        cls.file_received()
+    
+    @classmethod
+    def bytesSent(cls, count: int):
+        """Add bytes sent (Java compatibility method)."""
+        cls.bytes_sent(count)
+    
+    @classmethod
+    def bytesRcvd(cls, count: int):
+        """Add bytes received (Java compatibility method)."""
+        cls.bytes_received(count)
     
     @classmethod
     def reset_bytes_sent_history(cls):

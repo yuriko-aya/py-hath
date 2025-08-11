@@ -2,6 +2,21 @@
 
 ## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes - Build 176)
 
+### Proxy File Serving Improvements
+- **Reverted to In-Memory Proxy Downloads**: Simplified proxy file serving to use full in-memory downloads instead of streaming
+  - Downloads complete file into memory before serving to client
+  - Validates file size and SHA1 hash before serving
+  - Supports both full file and range requests from memory
+  - Reduces complexity and eliminates streaming-related errors
+  - **Impact**: More reliable proxy file serving with simpler error handling
+
+### Statistics System Enhancements
+- **Added Missing Java Compatibility Methods**
+  - `Stats.bytes_received()` and `Stats.bytes_sent()` methods for proxy download tracking
+  - `Stats.fileSent()`, `Stats.fileRcvd()`, `Stats.bytesSent()`, `Stats.bytesRcvd()` static methods
+  - `HTTPBandwidthMonitor.throttle_bandwidth()` method for Java compatibility
+  - **Impact**: Resolves AttributeError during proxy downloads and statistics tracking
+
 ### Java Method Compatibility Improvements
 - **Added HVFile.getHVFileFromFileid Static Method**
   - Implemented missing static method to create HVFile instances from file ID strings
