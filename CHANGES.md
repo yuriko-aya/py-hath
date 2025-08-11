@@ -18,11 +18,11 @@
   - **Resource Management**: Better control over memory and CPU usage per component
 
 - **Enhanced Launcher and Configuration**
-  - New `launch.py` script with intuitive command-line interface
+  - New enhanced `main.py` script with intuitive command-line interface
   - Support for both single-process and multiprocess modes
   - Runtime configuration: worker counts, debug mode, custom ports
   - Comprehensive help system with usage examples and mode comparisons
-  - **Usage**: `./launch.py --multiprocess` or `python main.py --mp`
+  - **Usage**: `./main.py --multiprocess` or `python main.py --mp`
 
 - **Advanced Process Management**
   - Process lifecycle management with graceful startup and shutdown

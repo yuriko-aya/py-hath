@@ -45,18 +45,18 @@ pip install -r requirements.txt
 
 **Multiprocess Mode (Recommended):**
 ```bash
-./launch.py --multiprocess
+./main.py --multiprocess
 ```
 
 **Single-Process Mode:**
 ```bash
-./launch.py
+./main.py
 ```
 
 **With Options:**
 ```bash
-./launch.py --mp --workers 8 --debug  # 8 workers with debug logging
-./launch.py --help                    # Show all options
+./main.py --mp --workers 8 --debug  # 8 workers with debug logging
+./main.py --help                    # Show all options
 ```
 
 ## Detailed Usage

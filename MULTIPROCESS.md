@@ -80,22 +80,22 @@ The py-hath client now supports multiprocess mode for enhanced performance and r
 
 ### Starting Multiprocess Mode
 
-#### Using the Launcher
+#### Using the Main Script
 ```bash
 # Basic multiprocess mode
-./launch.py --multiprocess
+./main.py --multiprocess
 
 # With custom worker count
-./launch.py --mp --workers 8
+./main.py --mp --workers 8
 
 # With debug logging
-./launch.py --multiprocess --debug
+./main.py --multiprocess --debug
 
 # Help and options
-./launch.py --help
+./main.py --help
 ```
 
-#### Using Main Script
+#### Direct Python Invocation
 ```bash
 # Direct invocation
 python main.py --multiprocess
@@ -123,13 +123,13 @@ class MultiprocessConfig:
 #### Runtime Configuration
 ```bash
 # Custom worker counts
-./launch.py --mp --workers 8
+./main.py --mp --workers 8
 
 # Custom port
-./launch.py --mp --port 8080
+./main.py --mp --port 8080
 
 # Custom cache directory
-./launch.py --mp --cache-dir /path/to/cache
+./main.py --mp --cache-dir /path/to/cache
 ```
 
 ## Monitoring
