@@ -31,17 +31,16 @@ The system automatically detects your CPU count and configures optimal worker co
 
 ### Performance Benefits
 
-- **2-4x throughput improvement** over single-process mode
-- True parallelism (bypasses Python GIL)
-- Fault isolation (one process crash doesn't kill everything)
-- Better resource utilization on multi-core systems
+- **2-3x throughput improvement** for HTTP requests
+- True parallelism for concurrent request handling  
+- Fault isolation (HTTP server crash doesn't kill main client)
+- Better resource utilization for file serving
 
 ### Process Architecture
 
 When running in multiprocess mode, you'll see:
-1. **Main Process**: Coordinates everything
-2. **HTTP Server Process**: Handles web requests  
-3. **Download Manager Process**: Manages file downloads
+1. **Main Process**: Coordinates everything + handles downloads
+2. **HTTP Server Process**: Handles web requests in parallel
 
 ### Monitoring
 
@@ -79,6 +78,6 @@ The multiprocess mode uses the same configuration files:
 
 On a typical multi-core system:
 - **Single-process**: ~50-100 requests/second
-- **Multiprocess**: ~200-400 requests/second
-- **Memory usage**: Similar to single-process
-- **CPU usage**: Better distribution across cores
+- **Multiprocess**: ~150-300 requests/second  
+- **Memory usage**: Slightly higher (one additional process)
+- **CPU usage**: Better utilization for HTTP serving
