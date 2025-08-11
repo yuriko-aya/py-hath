@@ -128,10 +128,9 @@ class MultiprocessHTTPServer:
     
     def _apply_shared_settings(self):
         """Apply settings from shared resources."""
-        # Copy settings from shared resources to local Settings
-        with self.shared.settings_lock:
-            for key, value in self.shared.client_settings.items():
-                Settings.set(key, value)
+        # Set active client to None for HTTP server process
+        from .settings import Settings
+        Settings.set_active_client(None)
     
     def run(self):
         """Run the HTTP server."""

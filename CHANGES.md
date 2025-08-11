@@ -1,5 +1,62 @@
 # py-hath Changes
 
+## [Version 1.7.1#py] - 2025-08-11 (Multiprocess Stability & Server Communication - Build 178)
+
+### 🔧 **Multiprocess System Reliability Improvements**
+- **Fixed Critical Heartbeat Monitoring Bug**
+  - Resolved multiprocessing.Manager() shared dictionary update issue preventing heartbeat tracking
+  - Fixed shared resource updates by properly replacing entire dictionary entries instead of nested modifications
+  - **Impact**: Eliminated false "Process has not sent heartbeat" warnings, ensuring accurate process health monitoring
+
+- **Enhanced Server Communication Reliability**
+  - Implemented robust retry logic for all server RPC requests (5 attempts with 5-second delays)
+  - Added comprehensive error handling for network failures, HTTP errors, and timeouts
+  - Improved error categorization and logging for better debugging
+  - Added special handling for critical actions (client_login, server_stat) with enhanced error reporting
+  - **Impact**: Dramatically reduced client shutdowns due to temporary network issues or server maintenance
+
+- **Resolved Duplicate Server Notifications**
+  - Fixed multiple client_start/client_stop actions being sent to RPC server on startup/shutdown
+  - Implemented process isolation to ensure only main process sends server notifications
+  - Added startup_notified and shutdown_notified flags to prevent duplicate notifications
+  - Clear active client in HTTP server process to prevent unauthorized server access
+  - **Impact**: Exactly one server notification per session, eliminating server-side duplicate request issues
+
+### 🛠️ **Process Management Enhancements**
+- **Improved SSL Certificate Handling**
+  - Enhanced PKCS#12 certificate validation and loading in multiprocess environment
+  - Fixed SSL configuration independence between main and HTTP server processes
+  - Main process ensures certificate download before HTTP server startup
+  - HTTP server retrieves SSL configuration from shared resources without server dependencies
+  - **Impact**: More reliable HTTPS server startup and certificate management
+
+- **Better Error Handling and Logging**
+  - Enhanced debug logging for heartbeat processing and health monitoring
+  - Improved process status tracking with consistent naming (http_server vs http_process)
+  - Added comprehensive error messages for SSL certificate issues
+  - Better exception handling in server communication with detailed error context
+  - **Impact**: Easier troubleshooting and more informative error messages
+
+- **Code Quality Improvements**
+  - Removed duplicate notify_start() method in ServerHandler
+  - Fixed Settings.set() method calls in HTTP server process
+  - Added missing delete_downloader() compatibility method for gallery downloader integration
+  - Proper indentation and syntax fixes for retry logic implementation
+  - **Impact**: Cleaner codebase with better maintainability and fewer runtime errors
+
+### 🚀 **Performance and Stability**
+- **Optimized Heartbeat System**
+  - HTTP server sends heartbeats every 10 seconds with accurate timestamps
+  - Main process monitors process health with 60-second timeout
+  - Proper shared memory synchronization for heartbeat tracking
+  - **Impact**: Reliable process health monitoring without false positives
+
+- **Enhanced Process Initialization**
+  - Better process stats initialization with current timestamps
+  - Improved process readiness coordination between main and HTTP server processes
+  - Enhanced shutdown coordination to prevent race conditions
+  - **Impact**: Faster and more reliable multiprocess client startup/shutdown
+
 ## [Version 1.7.0#py] - 2025-08-11 (Multiprocess Architecture - Build 177)
 
 ### 🚀 **Major New Feature: Multiprocess Mode**

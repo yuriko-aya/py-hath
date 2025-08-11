@@ -61,7 +61,7 @@ class SharedResources:
         # Process status tracking
         self.process_stats.update({
             'main_process': {'status': 'starting', 'last_heartbeat': time.time()},
-            'http_process': {'status': 'not_started', 'last_heartbeat': 0}
+            'http_server': {'status': 'not_started', 'last_heartbeat': time.time()}
         })
 
 
@@ -326,10 +326,20 @@ class MultiprocessHentaiAtHomeClient:
                     self.shared.cache_stats['total_size'] = stat_update.get('total_size', 0)
             elif stat_type == 'heartbeat':
                 process_name = stat_update.get('process', 'unknown')
+                timestamp = stat_update.get('timestamp', time.time())
+                Out.debug(f"Processing heartbeat from {process_name} at {timestamp}")
                 with self.shared.stats_lock:
                     if process_name in self.shared.process_stats:
-                        self.shared.process_stats[process_name]['last_heartbeat'] = time.time()
-                        self.shared.process_stats[process_name]['status'] = 'running'
+                        # Properly update shared dictionary by replacing the entire entry
+                        old_stats = dict(self.shared.process_stats[process_name])
+                        old_timestamp = old_stats.get('last_heartbeat', 0)
+                        old_stats['last_heartbeat'] = timestamp
+                        old_stats['status'] = 'running'
+                        self.shared.process_stats[process_name] = old_stats
+                        Out.debug(f"Updated {process_name} heartbeat: {old_timestamp} -> {timestamp}")
+                    else:
+                        Out.debug(f"Received heartbeat from unknown process: {process_name}")
+                        Out.debug(f"Known processes: {list(self.shared.process_stats.keys())}")
             
         except Exception as e:
             Out.warning(f"Error processing stat update: {e}")
@@ -531,8 +541,11 @@ class MultiprocessHentaiAtHomeClient:
                     continue
                 
                 last_heartbeat = stats.get('last_heartbeat', 0)
-                if current_time - last_heartbeat > health_timeout:
-                    Out.warning(f"Process {process_name} has not sent heartbeat for {current_time - last_heartbeat:.1f}s")
+                time_since_heartbeat = current_time - last_heartbeat
+                Out.debug(f"Process {process_name}: last_heartbeat={last_heartbeat}, time_since={time_since_heartbeat:.1f}s")
+                
+                if time_since_heartbeat > health_timeout:
+                    Out.warning(f"Process {process_name} has not sent heartbeat for {time_since_heartbeat:.1f}s")
     
     def shutdown(self):
         """Shutdown the multiprocess client."""
@@ -597,6 +610,12 @@ class MultiprocessHentaiAtHomeClient:
     def is_shutting_down(self) -> bool:
         """Check if client is shutting down."""
         return self.shutdown_flag
+    
+    def delete_downloader(self):
+        """Delete/cleanup downloader reference (compatibility method)."""
+        # This is called by GalleryDownloader when it finishes
+        # In multiprocess mode, we just log this event
+        Out.debug("Gallery downloader cleanup requested")
 
 
 def http_server_process_main(shared_resources: SharedResources):

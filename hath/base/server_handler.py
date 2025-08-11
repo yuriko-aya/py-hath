@@ -105,11 +105,6 @@ class ServerHandler:
             Out.debug(f"Server stat refresh failed: {response}")
             return False
     
-    def notify_start(self) -> bool:
-        """Notify server that client has started."""
-        response = self._get_server_response(self.ACT_CLIENT_START)
-        return response is not None and response.get('status') == 'OK'
-    
     def notify_shutdown(self) -> bool:
         """Notify server that client is shutting down."""
         response = self._get_server_response(self.ACT_CLIENT_STOP)
@@ -160,112 +155,151 @@ class ServerHandler:
     
     def _get_server_response(self, action: str, extra_params: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
         """Get response from server for the given action."""
-        try:
-            Out.debug(f"Making server request for action: {action}")
+        Out.debug(f"Making server request for action: {action}")
+        
+        # Build request parameters based on action type
+        if action == self.ACT_SERVER_STAT:
+            # server_stat uses simple format: clientbuild, act
+            params = {
+                'clientbuild': str(Settings.CLIENT_BUILD),
+                'act': action
+            }
+        elif action == self.ACT_CLIENT_LOGIN:
+            # client_login uses: clientbuild, act, cid, acttime, actkey
+            current_time = Settings.get_server_time()
+            client_id = str(Settings.get_client_id())
+            client_key = Settings.get_client_key()
+            add = ""  # Empty add parameter for client_login
             
-            # Build request parameters based on action type
-            if action == self.ACT_SERVER_STAT:
-                # server_stat uses simple format: clientbuild, act
-                params = {
-                    'clientbuild': str(Settings.CLIENT_BUILD),
-                    'act': action
-                }
-            elif action == self.ACT_CLIENT_LOGIN:
-                # client_login uses: clientbuild, act, cid, acttime, actkey
-                current_time = Settings.get_server_time()
-                client_id = str(Settings.get_client_id())
-                client_key = Settings.get_client_key()
-                add = ""  # Empty add parameter for client_login
-                
-                # Calculate actkey using Java formula: SHA1("hentai@home-" + act + "-" + add + "-" + cid + "-" + acttime + "-" + clientkey)
-                actkey_string = f"hentai@home-{action}-{add}-{client_id}-{current_time}-{client_key}"
-                actkey = Tools.get_sha1_string(actkey_string)
-                
-                params = {
-                    'clientbuild': str(Settings.CLIENT_BUILD),
-                    'act': action,
-                    'cid': client_id,
-                    'acttime': str(current_time),
-                    'actkey': actkey
-                }
-            else:
-                # All other actions use getURLQueryString format: clientbuild, act, add, cid, acttime, actkey
-                current_time = Settings.get_server_time()
-                client_id = str(Settings.get_client_id())
-                client_key = Settings.get_client_key()
-                add = ""  # Default empty add parameter
-                
-                # Extract add parameter from extra_params if provided
-                if extra_params and 'add' in extra_params:
-                    add = extra_params['add']
-                
-                # Calculate actkey using Java formula: SHA1("hentai@home-" + act + "-" + add + "-" + cid + "-" + acttime + "-" + clientkey)
-                actkey_string = f"hentai@home-{action}-{add}-{client_id}-{current_time}-{client_key}"
-                actkey = Tools.get_sha1_string(actkey_string)
-                
-                params = {
-                    'clientbuild': str(Settings.CLIENT_BUILD),
-                    'act': action,
-                    'add': add,
-                    'cid': client_id,
-                    'acttime': str(current_time),
-                    'actkey': actkey
-                }
+            # Calculate actkey using Java formula: SHA1("hentai@home-" + act + "-" + add + "-" + cid + "-" + acttime + "-" + clientkey)
+            actkey_string = f"hentai@home-{action}-{add}-{client_id}-{current_time}-{client_key}"
+            actkey = Tools.get_sha1_string(actkey_string)
             
-            # Build URL
-            url = f"{Settings.CLIENT_RPC_PROTOCOL}{Settings.CLIENT_RPC_HOST}/{Settings._rpc_path}"
-            Out.debug(f"Request URL: {url}")
-            Out.debug(f"Request params: {dict((k, v if k not in ['clientkey', 'actkey'] else '***') for k, v in params.items())}")
+            params = {
+                'clientbuild': str(Settings.CLIENT_BUILD),
+                'act': action,
+                'cid': client_id,
+                'acttime': str(current_time),
+                'actkey': actkey
+            }
+        else:
+            # All other actions use getURLQueryString format: clientbuild, act, add, cid, acttime, actkey
+            current_time = Settings.get_server_time()
+            client_id = str(Settings.get_client_id())
+            client_key = Settings.get_client_key()
+            add = ""  # Default empty add parameter
             
-            # Make request - ALL RPC requests use GET method with URL parameters
-            Out.debug("Sending HTTP request...")
-            Out.debug(f"Using GET method for {action}")
-            response = requests.get(url, params=params, timeout=30)
+            # Extract add parameter from extra_params if provided
+            if extra_params and 'add' in extra_params:
+                add = extra_params['add']
             
-            Out.debug(f"HTTP response status: {response.status_code}")
+            # Calculate actkey using Java formula: SHA1("hentai@home-" + act + "-" + add + "-" + cid + "-" + acttime + "-" + clientkey)
+            actkey_string = f"hentai@home-{action}-{add}-{client_id}-{current_time}-{client_key}"
+            actkey = Tools.get_sha1_string(actkey_string)
             
-            if response.status_code == 200:
-                response_text = response.text.strip()
-                Out.debug(f"Response text: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
+            params = {
+                'clientbuild': str(Settings.CLIENT_BUILD),
+                'act': action,
+                'add': add,
+                'cid': client_id,
+                'acttime': str(current_time),
+                'actkey': actkey
+            }
+        
+        # Build URL
+        url = f"{Settings.CLIENT_RPC_PROTOCOL}{Settings.CLIENT_RPC_HOST}/{Settings._rpc_path}"
+        Out.debug(f"Request URL: {url}")
+        Out.debug(f"Request params: {dict((k, v if k not in ['clientkey', 'actkey'] else '***') for k, v in params.items())}")
+        
+        # Retry logic - attempt request up to 5 times with 5-second delays
+        max_retries = 5
+        retry_delay = 5  # seconds
+        last_exception = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Make request - ALL RPC requests use GET method with URL parameters
+                Out.debug(f"Sending HTTP request (attempt {attempt}/{max_retries})...")
+                Out.debug(f"Using GET method for {action}")
+                response = requests.get(url, params=params, timeout=30)
                 
-                # Parse response
-                if response_text.startswith('OK'):
-                    Out.debug("Server response: OK")
-                    return {
-                        'status': 'OK',
-                        'response_text': response_text[3:] if len(response_text) > 2 else ''
-                    }
-                elif response_text.startswith('FAIL'):
-                    fail_code = response_text[5:] if len(response_text) > 4 else 'Unknown'
-                    Out.debug(f"Server response: FAIL with code {fail_code}")
-                    return {
-                        'status': 'FAIL',
-                        'fail_code': fail_code
-                    }
-                elif response_text.startswith('KEY_FAIL'):
-                    # Handle KEY_FAIL response for client_login
-                    fail_message = response_text[9:] if len(response_text) > 8 else 'Authentication failed'
-                    Out.debug(f"Server response: KEY_FAIL - {fail_message}")
-                    return {
-                        'status': 'FAIL',
-                        'fail_code': f'KEY_FAIL{fail_message}'
-                    }
+                Out.debug(f"HTTP response status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    response_text = response.text.strip()
+                    Out.debug(f"Response text: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
+                    
+                    # Parse response
+                    if response_text.startswith('OK'):
+                        Out.debug("Server response: OK")
+                        return {
+                            'status': 'OK',
+                            'response_text': response_text[3:] if len(response_text) > 2 else ''
+                        }
+                    elif response_text.startswith('FAIL'):
+                        fail_code = response_text[5:] if len(response_text) > 4 else 'Unknown'
+                        Out.debug(f"Server response: FAIL with code {fail_code}")
+                        return {
+                            'status': 'FAIL',
+                            'fail_code': fail_code
+                        }
+                    elif response_text.startswith('KEY_FAIL'):
+                        # Handle KEY_FAIL response for client_login
+                        fail_message = response_text[9:] if len(response_text) > 8 else 'Authentication failed'
+                        Out.debug(f"Server response: KEY_FAIL - {fail_message}")
+                        return {
+                            'status': 'FAIL',
+                            'fail_code': f'KEY_FAIL{fail_message}'
+                        }
+                    else:
+                        Out.debug(f"Unexpected response format: {response_text}")
+                        # For unexpected formats, treat as failure
+                        return {
+                            'status': 'FAIL', 
+                            'fail_code': response_text
+                        }
                 else:
-                    Out.debug(f"Unexpected response format: {response_text}")
-                    # For unexpected formats, treat as failure
-                    return {
-                        'status': 'FAIL', 
-                        'fail_code': response_text
-                    }
-            else:
-                Out.debug(f"HTTP error response: {response.status_code} - {response.text}")
-            
-            return None
-            
-        except Exception as e:
-            Out.error(f"Server communication error: {e}")
-            Out.debug(f"Exception details: {type(e).__name__}: {str(e)}")
-            return None
+                    # HTTP error - this could be temporary, so retry
+                    error_msg = f"HTTP error response: {response.status_code} - {response.text}"
+                    Out.debug(error_msg)
+                    last_exception = Exception(error_msg)
+                    
+                    if attempt < max_retries:
+                        Out.warning(f"Server request failed (attempt {attempt}/{max_retries}): HTTP {response.status_code}. Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    
+            except requests.exceptions.RequestException as e:
+                # Network/connection errors - definitely retry these
+                error_msg = f"Network error: {e}"
+                Out.debug(error_msg)
+                last_exception = e
+                
+                if attempt < max_retries:
+                    Out.warning(f"Server request failed (attempt {attempt}/{max_retries}): {error_msg}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                    
+            except Exception as e:
+                # Other exceptions - still retry as they could be temporary
+                error_msg = f"Request error: {e}"
+                Out.debug(error_msg)
+                last_exception = e
+                
+                if attempt < max_retries:
+                    Out.warning(f"Server request failed (attempt {attempt}/{max_retries}): {error_msg}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+        
+        # All retries exhausted
+        final_error = f"Server communication failed after {max_retries} attempts. Last error: {last_exception}"
+        Out.error(final_error)
+        
+        # For critical actions that could cause startup/shutdown issues, we should be more specific
+        if action in [self.ACT_CLIENT_LOGIN, self.ACT_SERVER_STAT]:
+            Out.error(f"Critical server communication failure for action '{action}' - this may cause client shutdown")
+        
+        return None
     
     def _parse_and_update_settings(self, settings_text: str):
         """Parse and update settings from server response."""
