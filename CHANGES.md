@@ -2,6 +2,26 @@
 
 ## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes)
 
+### Cache System Improvements
+- **Complete Java Parity for Persistent Cache Data**
+  - **File Format**: Rewrote persistence system to exactly match Java implementation
+    - `pcache_info`: Text file with key=value format (not binary pickle)
+    - `pcache_ages`: Binary file with static range oldest timestamps  
+    - `pcache_lru`: Binary file with LRU cache table (1,048,576 shorts)
+    - **Location**: Files now stored in `data` directory instead of `tmp`
+  - **Integrity & Validation**: Added SHA1 hash validation for each binary file
+    - Hash validation prevents corruption from causing infinite loops
+    - Checksum validation ensures all required fields are loaded (bit flags: 1|2|4|8|16 = 31)
+    - Early deletion of info file prevents corruption loops
+  - **LRU Cache System**: Implemented complete Java-equivalent LRU management
+    - **Correct Size**: 1,048,576 elements matching Java `LRU_CACHE_SIZE`
+    - **Proper Cycling**: Clears 17 elements every 10 seconds for ~1 week lifespan
+    - **Pointer Management**: `lruClearPointer` tracks current position
+  - **Data Types & Structure**: 
+    - **Static Range Ages**: Dictionary matching Java `Hashtable<String,Long>`
+    - **LRU Table**: List of integers (0-65535) matching Java `short[]`
+    - **Persistence**: Proper serialization with hash validation using pickle for binary data
+
 ### Critical Bug Fixes
 - **Fixed NoneType comparison errors that prevented client startup**
   - Fixed `is_suspended()` method to handle `None` values in `suspended_until` field
@@ -46,6 +66,7 @@
 - **Root Cause**: The client was failing during the main operational loop due to multiple NoneType comparison errors
 - **Impact**: Client could successfully start up, connect to server, download certificates, and initialize all components, but would crash immediately when entering normal operation mode
 - **Resolution**: Added comprehensive null checks and proper return values throughout the codebase, particularly in session management and settings handling
+- **Cache Persistence**: Rewrote entire persistent cache system to match Java implementation exactly, ensuring data integrity and proper LRU management
 
 ---
 
