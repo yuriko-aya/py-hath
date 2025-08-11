@@ -14,6 +14,10 @@ from urllib.parse import urlparse, parse_qs
 
 from .out import Out
 from .settings import Settings
+from .http_session import HTTPSession, HTTPSessionManager
+from .http_bandwidth_monitor import HTTPBandwidthMonitor
+from .file_validator import FileValidator
+from .stats import Stats
 
 
 class HTTPRequestHandler(BaseHTTPRequestHandler):
@@ -24,12 +28,42 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     
     def __init__(self, *args, **kwargs):
         self.hath_server = None
+        self.session = None
+        self.bandwidth_monitor = HTTPBandwidthMonitor.get_instance()
         super().__init__(*args, **kwargs)
+    
+    def setup(self):
+        """Set up the request handler with session tracking."""
+        super().setup()
+        
+        # Create HTTP session for this connection
+        client_ip = self.client_address[0]
+        client_port = self.client_address[1]
+        self.session = HTTPSessionManager.get_instance().create_session(client_ip, client_port)
+        
+        if self.session:
+            Out.debug(f"Created session {self.session.session_id} for {client_ip}:{client_port}")
+        else:
+            Out.warning(f"Failed to create session for {client_ip}:{client_port} - connection limit reached")
+    
+    def finish(self):
+        """Clean up the request handler and session."""
+        if self.session:
+            HTTPSessionManager.get_instance().end_session(self.session.session_id)
+            Out.debug(f"Ended session {self.session.session_id}")
+        super().finish()
     
     def do_GET(self):
         """Handle GET requests."""
         try:
+            # Update session and stats
+            if self.session:
+                self.session.start_processing_request("GET " + self.path)
+            
+            Stats.get_instance().increment_files_received()
+            
             self.handle_request()
+            
         except (ConnectionResetError, BrokenPipeError):
             # Client disconnected - this is normal, don't log as error
             Out.debug(f"Client {self.client_address[0]} disconnected during GET request")
@@ -45,11 +79,22 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(500, "Internal Server Error")
             except:
                 pass  # Connection might already be closed
+        finally:
+            # End request processing
+            if self.session:
+                self.session.end_processing_request()
     
     def do_HEAD(self):
         """Handle HEAD requests."""
         try:
+            # Update session and stats
+            if self.session:
+                self.session.start_processing_request("HEAD " + self.path)
+            
+            Stats.get_instance().increment_files_received()
+            
             self.handle_request()
+            
         except (ConnectionResetError, BrokenPipeError):
             # Client disconnected - this is normal, don't log as error
             Out.debug(f"Client {self.client_address[0]} disconnected during HEAD request")
@@ -65,6 +110,10 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(500, "Internal Server Error")
             except:
                 pass  # Connection might already be closed
+        finally:
+            # End request processing
+            if self.session:
+                self.session.end_processing_request()
     
     def handle_request(self):
         """Handle HTTP request."""
@@ -224,7 +273,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             self.send_error(500, "Internal Server Error")
     
     def serve_file_from_cache(self, hv_file):
-        """Serve a file from local cache."""
+        """Serve a file from local cache with advanced HTTP features."""
         try:
             file_path = hv_file.get_local_file_ref()
             
@@ -232,61 +281,306 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "File not found")
                 return
             
+            # Validate file integrity before serving (if enabled)
+            validator = FileValidator.get_instance()
+            if Settings.get_bool('validate_files_on_serve', True):
+                expected_hash = hv_file.hash  # Assuming the HVFile has the expected hash
+                if expected_hash and not validator.validate_file(file_path, expected_hash):
+                    Out.warning(f"File validation failed for {hv_file.file_id}, removing from cache")
+                    # Mark file as invalid and remove
+                    cache_handler = Settings.get_active_client().get_cache_handler()
+                    if cache_handler:
+                        cache_handler.remove_file_from_cache(hv_file.file_id)
+                    self.send_error(404, "File corrupted")
+                    return
+            
+            # Get file stats for conditional headers
+            file_stat = file_path.stat()
+            file_size = file_stat.st_size
+            last_modified = file_stat.st_mtime
+            
+            # Generate ETag based on file size and modification time
+            etag = f'"{file_size}-{int(last_modified)}"'
+            
+            # Handle conditional requests
+            if self.handle_conditional_request(last_modified, etag):
+                return  # 304 Not Modified sent
+            
             # Determine content type
             content_type = self.guess_content_type(file_path.name, file_path)
             
-            # Send headers
-            self.send_response(200)
-            self.send_header('Content-Type', content_type)
-            self.send_header('Content-Length', str(hv_file.size))
-            self.send_header('Accept-Ranges', 'bytes')
-            # Tell browser to display inline instead of downloading
-            self.send_header('Content-Disposition', 'inline')
-            # Cache for one year (31536000 seconds)
-            self.send_header('Cache-Control', 'public, max-age=31536000')
-            self.end_headers()
-            
-            # Send file content (only for GET, not HEAD)
-            if self.command == 'GET':
-                try:
-                    with open(file_path, 'rb') as f:
-                        while True:
-                            data = f.read(8192)
-                            if not data:
-                                break
-                            self.wfile.write(data)
-                except (ConnectionResetError, BrokenPipeError):
-                    # Client disconnected - this is normal, don't log as error
-                    Out.debug(f"Client disconnected during file transfer for {hv_file.file_id}")
-                    return
-                except (ssl.SSLError, OSError) as e:
-                    # SSL/network errors during file transfer - often due to client disconnect
-                    if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
-                        Out.debug(f"SSL/network error during file transfer (client likely disconnected): {e}")
-                    else:
-                        Out.warning(f"SSL/network error serving file {hv_file.file_id}: {e}")
-                    return
-            
-            # Mark as recently accessed
-            cache_handler = Settings.get_active_client().get_cache_handler()
-            if cache_handler:
-                cache_handler.mark_recently_accessed(hv_file)
-            
-        except (ConnectionResetError, BrokenPipeError):
-            # Client disconnected before we could send headers
-            Out.debug(f"Client disconnected before serving cached file {hv_file.file_id}")
-        except (ssl.SSLError, OSError) as e:
-            # SSL/network errors
-            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
-                Out.debug(f"SSL/network error serving cached file (client likely disconnected): {e}")
+            # Handle Range requests
+            range_header = self.headers.get('Range')
+            if range_header and range_header.startswith('bytes='):
+                self.serve_range_request(file_path, file_size, content_type, last_modified, etag, range_header)
             else:
-                Out.warning(f"SSL/network error serving cached file: {e}")
+                self.serve_full_file(file_path, file_size, content_type, last_modified, etag)
+                
         except Exception as e:
             Out.error(f"Error serving file from cache: {e}")
             self.send_error(500, "Internal Server Error")
     
+    def handle_conditional_request(self, last_modified: float, etag: str) -> bool:
+        """Handle conditional HTTP requests (If-Modified-Since, If-None-Match).
+        
+        Returns:
+            True if 304 Not Modified was sent, False otherwise
+        """
+        # Handle If-None-Match (ETag)
+        if_none_match = self.headers.get('If-None-Match')
+        if if_none_match:
+            # Simple ETag comparison (should handle weak/strong ETags in production)
+            if if_none_match == etag or if_none_match == '*':
+                self.send_response(304)
+                self.send_header('ETag', etag)
+                self.send_header('Cache-Control', 'public, max-age=31536000')
+                self.end_headers()
+                return True
+        
+        # Handle If-Modified-Since
+        if_modified_since = self.headers.get('If-Modified-Since')
+        if if_modified_since:
+            try:
+                import email.utils
+                client_time = email.utils.parsedate_to_datetime(if_modified_since).timestamp()
+                # Only compare to second precision (HTTP dates don't include milliseconds)
+                if int(last_modified) <= int(client_time):
+                    self.send_response(304)
+                    self.send_header('Last-Modified', email.utils.formatdate(last_modified, usegmt=True))
+                    self.send_header('ETag', etag)
+                    self.send_header('Cache-Control', 'public, max-age=31536000')
+                    self.end_headers()
+                    return True
+            except (ValueError, TypeError):
+                # Invalid date format, ignore
+                pass
+        
+        return False
+    
+    def serve_full_file(self, file_path: Path, file_size: int, content_type: str, 
+                       last_modified: float, etag: str):
+        """Serve a complete file with proper headers."""
+        import email.utils
+        
+        # Send headers
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(file_size))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Last-Modified', email.utils.formatdate(last_modified, usegmt=True))
+        self.send_header('ETag', etag)
+        # Tell browser to display inline instead of downloading
+        self.send_header('Content-Disposition', 'inline')
+        # Cache for one year (31536000 seconds)
+        self.send_header('Cache-Control', 'public, max-age=31536000')
+        self.end_headers()
+        
+        # Send file content (only for GET, not HEAD)
+        if self.command == 'GET':
+            self.send_file_data(file_path, 0, file_size)
+    
+    def serve_range_request(self, file_path: Path, file_size: int, content_type: str,
+                           last_modified: float, etag: str, range_header: str):
+        """Serve a partial file response (HTTP 206)."""
+        import email.utils
+        
+        try:
+            # Parse range header: "bytes=start-end"
+            ranges = self.parse_range_header(range_header, file_size)
+            
+            if not ranges:
+                # Invalid range
+                self.send_response(416)  # Range Not Satisfiable
+                self.send_header('Content-Range', f'bytes */{file_size}')
+                self.send_header('Content-Type', content_type)
+                self.end_headers()
+                return
+            
+            if len(ranges) == 1:
+                # Single range
+                start, end = ranges[0]
+                content_length = end - start + 1
+                
+                self.send_response(206)  # Partial Content
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(content_length))
+                self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+                self.send_header('Accept-Ranges', 'bytes')
+                self.send_header('Last-Modified', email.utils.formatdate(last_modified, usegmt=True))
+                self.send_header('ETag', etag)
+                self.send_header('Cache-Control', 'public, max-age=31536000')
+                self.end_headers()
+                
+                # Send partial content (only for GET, not HEAD)
+                if self.command == 'GET':
+                    self.send_file_data(file_path, start, content_length)
+            else:
+                # Multiple ranges - use multipart/byteranges
+                self.serve_multipart_ranges(file_path, file_size, content_type, 
+                                          last_modified, etag, ranges)
+                
+        except Exception as e:
+            Out.error(f"Error serving range request: {e}")
+            self.send_error(500, "Internal Server Error")
+    
+    def parse_range_header(self, range_header: str, file_size: int) -> list:
+        """Parse HTTP Range header and return list of (start, end) tuples."""
+        ranges = []
+        
+        try:
+            # Remove "bytes=" prefix
+            range_spec = range_header[6:]  # len("bytes=") = 6
+            
+            # Split multiple ranges
+            for range_item in range_spec.split(','):
+                range_item = range_item.strip()
+                
+                if '-' not in range_item:
+                    continue
+                
+                start_str, end_str = range_item.split('-', 1)
+                
+                if start_str and end_str:
+                    # Both start and end specified: "200-299"
+                    start = int(start_str)
+                    end = int(end_str)
+                elif start_str:
+                    # Only start specified: "200-" (from 200 to end)
+                    start = int(start_str)
+                    end = file_size - 1
+                elif end_str:
+                    # Only end specified: "-500" (last 500 bytes)
+                    suffix_length = int(end_str)
+                    start = max(0, file_size - suffix_length)
+                    end = file_size - 1
+                else:
+                    # Invalid range
+                    continue
+                
+                # Validate range
+                if start < 0 or end < 0 or start >= file_size or end >= file_size or start > end:
+                    continue
+                
+                ranges.append((start, end))
+        
+        except (ValueError, IndexError):
+            # Invalid range format
+            return []
+        
+        return ranges
+    
+    def serve_multipart_ranges(self, file_path: Path, file_size: int, content_type: str,
+                              last_modified: float, etag: str, ranges: list):
+        """Serve multiple ranges as multipart/byteranges."""
+        import email.utils
+        import uuid
+        
+        # Generate boundary
+        boundary = f"----boundary_{uuid.uuid4().hex}"
+        
+        # Calculate total content length
+        content_length = 0
+        for start, end in ranges:
+            # Boundary + headers + CRLF + data + CRLF
+            range_header = f"Content-Type: {content_type}\r\nContent-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
+            content_length += len(f"--{boundary}\r\n") + len(range_header) + (end - start + 1) + len("\r\n")
+        content_length += len(f"--{boundary}--\r\n")
+        
+        # Send headers
+        self.send_response(206)  # Partial Content
+        self.send_header('Content-Type', f'multipart/byteranges; boundary={boundary}')
+        self.send_header('Content-Length', str(content_length))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Last-Modified', email.utils.formatdate(last_modified, usegmt=True))
+        self.send_header('ETag', etag)
+        self.send_header('Cache-Control', 'public, max-age=31536000')
+        self.end_headers()
+        
+        # Send multipart content (only for GET, not HEAD)
+        if self.command == 'GET':
+            with open(file_path, 'rb') as f:
+                for start, end in ranges:
+                    # Send boundary and headers
+                    boundary_data = f"--{boundary}\r\nContent-Type: {content_type}\r\nContent-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
+                    self.wfile.write(boundary_data.encode('utf-8'))
+                    
+                    # Send range data
+                    f.seek(start)
+                    self.send_file_chunk(f, end - start + 1)
+                    
+                    # Send CRLF after each part
+                    self.wfile.write(b"\r\n")
+                
+                # Send final boundary
+                final_boundary = f"--{boundary}--\r\n"
+                self.wfile.write(final_boundary.encode('utf-8'))
+    
+    def send_file_data(self, file_path: Path, start: int, length: int):
+        """Send file data with bandwidth throttling."""
+        bytes_sent = 0
+        bandwidth_monitor = HTTPBandwidthMonitor.get_instance()
+        
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(start)
+                remaining = length
+                
+                while remaining > 0:
+                    # Read chunk (max 8KB)
+                    chunk_size = min(8192, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    
+                    # Apply bandwidth throttling
+                    if bandwidth_monitor:
+                        bandwidth_monitor.throttle_bandwidth(len(data))
+                    
+                    # Send data
+                    self.wfile.write(data)
+                    bytes_sent += len(data)
+                    remaining -= len(data)
+                    
+                    # Update stats
+                    Stats.get_instance().add_bytes_sent(len(data))
+        
+        except Exception as e:
+            Out.warning(f"Error sending file data: {e}")
+        
+        Out.debug(f"Sent {bytes_sent} bytes from {file_path}")
+    
+    def send_file_chunk(self, file_obj, length: int):
+        """Send a chunk of data from an open file object."""
+        bytes_sent = 0
+        bandwidth_monitor = HTTPBandwidthMonitor.get_instance()
+        remaining = length
+        
+        while remaining > 0:
+            chunk_size = min(8192, remaining)
+            data = file_obj.read(chunk_size)
+            if not data:
+                break
+            
+            # Apply bandwidth throttling
+            if bandwidth_monitor:
+                bandwidth_monitor.throttle_bandwidth(len(data))
+            
+            # Send data
+            self.wfile.write(data)
+            bytes_sent += len(data)
+            remaining -= len(data)
+            
+            # Update stats
+            Stats.get_instance().add_bytes_sent(len(data))
+            
+        # Mark as successfully sent and recently accessed
+        Stats.get_instance().increment_files_sent()
+        cache_handler = Settings.get_active_client().get_cache_handler()
+        if cache_handler:
+            cache_handler.mark_recently_accessed(hv_file)
+    
     def serve_file_via_proxy(self, fileindex: str, xres: str, file_id: str):
-        """Serve a file by proxying from the server."""
+        """Serve a file by proxying from the server using streaming download."""
         try:
             # Get server handler
             client = Settings.get_active_client()
@@ -303,131 +597,230 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.send_error(404, "File not available")
                 return
             
-            # Try to fetch the file from one of the source URLs
-            import requests
+            # Get file info for validation
+            from .cache_handler import HVFile
+            hv_file = HVFile.getHVFileFromFileid(file_id)
             
-            file_data = None
-            content_type = 'application/octet-stream'
-            content_length = 0
-            
-            for source_url in sources:
-                try:
-                    Out.debug(f"Attempting to fetch file from: {source_url}")
-                    
-                    # Make request to source URL
-                    response = requests.get(source_url, timeout=30, stream=True)
-                    
-                    if response.status_code == 200:
-                        # Get content info
-                        content_type = response.headers.get('Content-Type', 'application/octet-stream')
-                        content_length = int(response.headers.get('Content-Length', 0))
-                        
-                        # Read the file data
-                        file_data = response.content
-                        
-                        Out.debug(f"Successfully fetched file from {source_url}, size: {len(file_data)} bytes")
-                        break
-                        
-                except Exception as e:
-                    Out.debug(f"Failed to fetch from {source_url}: {e}")
-                    continue
-            
-            if file_data is None:
-                Out.warning(f"Failed to fetch file {file_id} from any source URL")
-                self.send_error(502, "Failed to fetch file from upstream")
+            if not hv_file:
+                self.send_error(404, "File info not available")
                 return
             
-            # Send the file to client
+            # Use streaming proxy downloader
+            from .proxy_file_downloader import ProxyFileDownloader
+            
+            proxy_downloader = ProxyFileDownloader(
+                file_id=file_id,
+                sources=sources,
+                expected_size=hv_file.getSize(),
+                expected_hash=hv_file.getHash()
+            )
+            
+            # Initialize the download
+            status_code = proxy_downloader.initialize()
+            
+            if status_code != 200:
+                Out.warning(f"Failed to initialize proxy download for file {file_id}")
+                self.send_error(status_code, "Failed to initialize proxy download")
+                return
+            
+            # Check if this is a Range request
+            range_header = self.headers.get('Range')
+            if range_header:
+                self._serve_proxy_range_request(proxy_downloader, hv_file, range_header)
+            else:
+                self._serve_proxy_full_file(proxy_downloader, hv_file)
+                
+        except Exception as e:
+            Out.warning(f"Error serving proxy file {file_id}: {e}")
+            self.send_error(500, "Internal server error")
+    
+    def _serve_proxy_full_file(self, proxy_downloader, hv_file):
+        """Serve the full proxy file with streaming."""
+        try:
+            # Send response headers
             self.send_response(200)
-            self.send_header('Content-Type', content_type)
-            self.send_header('Content-Length', str(len(file_data)))
+            self.send_header('Content-Type', proxy_downloader.get_content_type())
+            self.send_header('Content-Length', str(proxy_downloader.get_content_length()))
             self.send_header('Accept-Ranges', 'bytes')
-            # Tell browser to display inline instead of downloading
-            self.send_header('Content-Disposition', 'inline')
-            # Cache for one year (31536000 seconds)
-            self.send_header('Cache-Control', 'public, max-age=31536000')
+            
+            # Add caching headers
+            last_modified = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())
+            self.send_header('Last-Modified', last_modified)
+            
+            # Generate ETag from file info
+            etag = f'"{hv_file.getHash()[:16]}"'
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', 'public, max-age=86400')
+            
             self.end_headers()
             
-            # Send file content (only for GET, not HEAD)
-            if self.command == 'GET':
-                try:
-                    self.wfile.write(file_data)
-                except (ConnectionResetError, BrokenPipeError):
-                    # Client disconnected - this is normal, don't log as error
-                    Out.debug(f"Client disconnected during proxy file transfer for {file_id}")
-                    return
-                except (ssl.SSLError, OSError) as e:
-                    # SSL/network errors during file transfer - often due to client disconnect
-                    if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
-                        Out.debug(f"SSL/network error during proxy file transfer (client likely disconnected): {e}")
-                    else:
-                        Out.warning(f"SSL/network error serving proxy file {file_id}: {e}")
-                    return
+            # Stream the file data
+            self._stream_proxy_data(proxy_downloader, 0, proxy_downloader.get_content_length() - 1)
             
-            # Cache the file for future requests
-            cache_handler = client.get_cache_handler()
-            if cache_handler and len(file_data) > 0:
-                try:
-                    import tempfile
-                    import hashlib
-                    from .cache_handler import HVFile
-                    
-                    # Calculate SHA1 hash of the file data
-                    sha1_hash = hashlib.sha1(file_data).hexdigest()
-                    
-                    # Create HVFile object
-                    hv_file = HVFile(file_id, len(file_data), sha1_hash)
-                    
-                    # Create temporary file in the cache directory to avoid cross-filesystem moves
-                    cache_dir = Settings.get_cache_dir()
-                    cache_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # Write file data to a temporary file in the cache directory
-                    with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as temp_file:
-                        temp_file.write(file_data)
-                        temp_file_path = Path(temp_file.name)
-                    
-                    # Import the file to cache
-                    if cache_handler.import_file_to_cache(temp_file_path, hv_file):
-                        Out.debug(f"File {file_id} cached successfully (size: {len(file_data)} bytes)")
-                    else:
-                        Out.warning(f"Failed to cache file {file_id}")
-                        # Clean up temp file if caching failed
-                        try:
-                            temp_file_path.unlink()
-                        except Exception as cleanup_error:
-                            Out.debug(f"Failed to cleanup temp file: {cleanup_error}")
-                    
-                except Exception as e:
-                    Out.warning(f"Failed to cache proxied file {file_id}: {e}")
-                    # Make sure we don't leave temp files around
-                    try:
-                        if 'temp_file_path' in locals() and temp_file_path.exists():
-                            temp_file_path.unlink()
-                    except:
-                        pass
-            
-            Out.debug(f"Successfully served file {file_id} via proxy")
-            
-        except (ConnectionResetError, BrokenPipeError):
-            # Client disconnected before we could serve the file
-            Out.debug(f"Client disconnected before serving proxy file {file_id}")
-        except (ssl.SSLError, OSError) as e:
-            # SSL/network errors
-            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
-                Out.debug(f"SSL/network error serving proxy file (client likely disconnected): {e}")
-            else:
-                Out.warning(f"SSL/network error serving proxy file: {e}")
-                try:
-                    self.send_error(500, "Internal Server Error")
-                except:
-                    pass  # Connection might already be closed
         except Exception as e:
-            Out.error(f"Error serving file via proxy: {e}")
+            Out.warning(f"Error serving full proxy file: {e}")
+            raise
+        finally:
+            proxy_downloader.proxy_thread_completed()
+    
+    def _serve_proxy_range_request(self, proxy_downloader, hv_file, range_header: str):
+        """Serve a range request for a proxy file."""
+        try:
+            file_size = proxy_downloader.get_content_length()
+            ranges = self._parse_range_header(range_header, file_size)
+            
+            if not ranges:
+                # Invalid range
+                self.send_response(416)  # Range Not Satisfiable
+                self.send_header('Content-Range', f'bytes */{file_size}')
+                self.end_headers()
+                return
+            
+            if len(ranges) == 1:
+                # Single range
+                start, end = ranges[0]
+                content_length = end - start + 1
+                
+                self.send_response(206)  # Partial Content
+                self.send_header('Content-Type', proxy_downloader.get_content_type())
+                self.send_header('Content-Length', str(content_length))
+                self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
+                self.send_header('Accept-Ranges', 'bytes')
+                
+                # Add caching headers
+                last_modified = time.strftime('%a, %d %b %Y %H:%M:%S GMT', time.gmtime())
+                self.send_header('Last-Modified', last_modified)
+                
+                etag = f'"{hv_file.getHash()[:16]}"'
+                self.send_header('ETag', etag)
+                
+                self.end_headers()
+                
+                # Stream the range
+                self._stream_proxy_data(proxy_downloader, start, end)
+                
+            else:
+                # Multiple ranges - use multipart response
+                boundary = f"boundary{time.time()}"
+                
+                self.send_response(206)
+                self.send_header('Content-Type', f'multipart/byteranges; boundary={boundary}')
+                
+                # Calculate total content length for multipart response
+                total_length = 0
+                for start, end in ranges:
+                    part_length = end - start + 1
+                    part_header = (
+                        f"\r\n--{boundary}\r\n"
+                        f"Content-Type: {proxy_downloader.get_content_type()}\r\n"
+                        f"Content-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
+                    )
+                    total_length += len(part_header.encode()) + part_length
+                
+                # Add final boundary
+                total_length += len(f"\r\n--{boundary}--\r\n".encode())
+                
+                self.send_header('Content-Length', str(total_length))
+                self.end_headers()
+                
+                # Send multipart data
+                for start, end in ranges:
+                    part_header = (
+                        f"\r\n--{boundary}\r\n"
+                        f"Content-Type: {proxy_downloader.get_content_type()}\r\n"
+                        f"Content-Range: bytes {start}-{end}/{file_size}\r\n\r\n"
+                    )
+                    self.wfile.write(part_header.encode())
+                    self._stream_proxy_data(proxy_downloader, start, end)
+                
+                # Send final boundary
+                self.wfile.write(f"\r\n--{boundary}--\r\n".encode())
+                
+        except Exception as e:
+            Out.warning(f"Error serving proxy range request: {e}")
+            raise
+        finally:
+            proxy_downloader.proxy_thread_completed()
+    
+    def _stream_proxy_data(self, proxy_downloader, start_byte: int, end_byte: int):
+        """Stream data from proxy downloader to client."""
+        chunk_size = 8192
+        current_pos = start_byte
+        
+        while current_pos <= end_byte:
+            # Calculate chunk size for this iteration
+            remaining = end_byte - current_pos + 1
+            read_size = min(chunk_size, remaining)
+            
+            # Wait for data to be available
+            if not proxy_downloader.wait_for_bytes(current_pos + read_size - 1, timeout=30.0):
+                Out.warning(f"Timeout waiting for proxy data at position {current_pos}")
+                break
+            
+            # Read data from proxy downloader
+            data = proxy_downloader.read_range(current_pos, current_pos + read_size - 1)
+            
+            if not data:
+                Out.warning(f"No data available from proxy downloader at position {current_pos}")
+                break
+            
+            # Apply bandwidth throttling
+            self.bandwidth_monitor.throttle_bandwidth(len(data))
+            
+            # Send data to client
             try:
-                self.send_error(500, "Internal Server Error")
-            except:
-                pass  # Connection might already be closed
+                self.wfile.write(data)
+                self.wfile.flush()
+                current_pos += len(data)
+                
+                # Update stats
+                Stats.bytesSent(len(data))
+                
+            except BrokenPipeError:
+                Out.debug("Client disconnected during proxy streaming")
+                break
+            except Exception as e:
+                Out.warning(f"Error writing proxy data to client: {e}")
+                break
+                
+        except Exception as e:
+            Out.warning(f"Error serving proxy file {file_id}: {e}")
+            self.send_error(500, "Internal server error")
+    
+    
+    def send_data_with_throttling(self, data: bytes):
+        """Send data with bandwidth throttling and stats tracking."""
+        bytes_sent = 0
+        bandwidth_monitor = HTTPBandwidthMonitor.get_instance()
+        
+        try:
+            # Send data in chunks with bandwidth throttling
+            chunk_size = 8192
+            for i in range(0, len(data), chunk_size):
+                chunk = data[i:i + chunk_size]
+                
+                # Apply bandwidth throttling
+                if bandwidth_monitor:
+                    bandwidth_monitor.throttle_bandwidth(len(chunk))
+                
+                # Send chunk
+                self.wfile.write(chunk)
+                bytes_sent += len(chunk)
+                
+                # Update stats
+                Stats.get_instance().add_bytes_sent(len(chunk))
+                
+        except (ConnectionResetError, BrokenPipeError):
+            # Client disconnected - this is normal, don't log as error
+            Out.debug(f"Client disconnected during data transfer")
+        except (ssl.SSLError, OSError) as e:
+            # SSL/network errors during file transfer
+            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                Out.debug(f"SSL/network error during transfer (client likely disconnected): {e}")
+            else:
+                Out.warning(f"SSL/network error during transfer: {e}")
+        
+        Out.debug(f"Sent {bytes_sent} bytes with throttling")
     
     def handle_speedtest_request(self, urlparts: List[str]):
         """Handle speed test request."""
@@ -595,12 +988,55 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
             elif command == 'threaded_proxy_test':
                 # Java: return processThreadedProxyTest(addTable);
-                # For now, return a placeholder response
+                # Implement a basic proxy connectivity test
+                successful_tests = 0
+                total_time_millis = 0
+                
+                try:
+                    # Check if proxy is configured
+                    proxy_host = Settings.get_image_proxy_host()
+                    proxy_port = Settings.get_image_proxy_port()
+                    proxy_type = Settings.get_image_proxy_type()
+                    
+                    if proxy_host and proxy_type:
+                        import time
+                        import requests
+                        
+                        start_time = time.time()
+                        
+                        # Test proxy connectivity with a simple request
+                        proxy_url = f"{proxy_type}://{proxy_host}:{proxy_port}"
+                        proxies = {'http': proxy_url, 'https': proxy_url}
+                        
+                        # Test with a reliable endpoint (Google DNS over HTTPS)
+                        test_url = "https://dns.google/resolve?name=google.com&type=A"
+                        
+                        try:
+                            response = requests.get(test_url, proxies=proxies, timeout=10)
+                            if response.status_code == 200:
+                                successful_tests = 1
+                            
+                        except Exception as e:
+                            Out.debug(f"Proxy test failed: {e}")
+                        
+                        end_time = time.time()
+                        total_time_millis = int((end_time - start_time) * 1000)
+                        
+                        Out.info(f"Proxy test completed: {successful_tests} successful, {total_time_millis}ms")
+                    else:
+                        Out.info("No proxy configured, skipping proxy test")
+                        
+                except Exception as e:
+                    Out.warning(f"Proxy test error: {e}")
+                
+                # Format response like Java: OK:successfulTests-totalTimeMillis
+                response_text = f"OK:{successful_tests}-{total_time_millis}"
+                
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
-                self.wfile.write(b'OK:0-0')  # Format: OK:successfulTests-totalTimeMillis
-                Out.debug("Responded to server threaded_proxy_test command")
+                self.wfile.write(response_text.encode('utf-8'))
+                Out.debug(f"Responded to server threaded_proxy_test command: {response_text}")
                 
             elif command == 'start_downloader':
                 # Java: client.startDownloader();
@@ -608,8 +1044,17 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 client = Settings.get_active_client()
                 if client:
                     try:
-                        # Start downloader (placeholder for now)
-                        Out.debug("Start downloader requested")
+                        # Start gallery downloader if not already running
+                        if not hasattr(client, 'gallery_downloader') or client.gallery_downloader is None:
+                            if Settings.get_bool('enable_gallery_downloader', True):
+                                Out.info("Starting gallery downloader via server command...")
+                                from ..gallery_downloader import GalleryDownloader
+                                client.gallery_downloader = GalleryDownloader(client)
+                                Out.info("Gallery downloader started successfully")
+                            else:
+                                Out.info("Gallery downloader is disabled in settings")
+                        else:
+                            Out.info("Gallery downloader is already running")
                     except Exception as e:
                         Out.warning(f"Failed to start downloader: {e}")
                 
@@ -625,8 +1070,21 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 client = Settings.get_active_client()
                 if client:
                     try:
-                        # Refresh certificates (placeholder for now)
-                        Out.debug("Certificate refresh requested")
+                        # Request certificate refresh from server
+                        Out.info("Certificate refresh requested via server command...")
+                        client.do_cert_refresh = True
+                        
+                        # Also try to refresh immediately if server handler is available
+                        server_handler = client.get_server_handler()
+                        if server_handler:
+                            # Trigger certificate download from server
+                            if server_handler.download_client_certificate():
+                                Out.info("Client certificate refreshed successfully")
+                            else:
+                                Out.warning("Failed to refresh client certificate")
+                        else:
+                            Out.info("Certificate refresh scheduled for next server communication")
+                            
                     except Exception as e:
                         Out.warning(f"Failed to refresh certificates: {e}")
                 
@@ -635,6 +1093,72 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b'')
                 Out.debug("Responded to server refresh_certs command")
+                
+            elif command == 'stop_downloader':
+                # Stop gallery downloader
+                client = Settings.get_active_client()
+                if client:
+                    try:
+                        if hasattr(client, 'gallery_downloader') and client.gallery_downloader:
+                            Out.info("Stopping gallery downloader via server command...")
+                            client.gallery_downloader.shutdown()
+                            client.gallery_downloader = None
+                            Out.info("Gallery downloader stopped successfully")
+                        else:
+                            Out.info("Gallery downloader is not running")
+                    except Exception as e:
+                        Out.warning(f"Failed to stop downloader: {e}")
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'')
+                Out.debug("Responded to server stop_downloader command")
+                
+            elif command == 'status':
+                # Return client status information
+                client = Settings.get_active_client()
+                status_info = []
+                
+                if client:
+                    try:
+                        # Basic client information
+                        status_info.append(f"Client ID: {Settings.get_client_id()}")
+                        status_info.append(f"Client Version: {Settings.CLIENT_VERSION}")
+                        status_info.append(f"Running: {not client.is_shutting_down()}")
+                        status_info.append(f"Suspended: {client.is_suspended()}")
+                        
+                        # Gallery downloader status
+                        if hasattr(client, 'gallery_downloader') and client.gallery_downloader:
+                            status_info.append("Gallery Downloader: Running")
+                        else:
+                            status_info.append("Gallery Downloader: Stopped")
+                        
+                        # HTTP server status
+                        if client.http_server:
+                            status_info.append(f"HTTP Server: Running on port {Settings.get_client_port()}")
+                        else:
+                            status_info.append("HTTP Server: Stopped")
+                        
+                        # Proxy configuration
+                        proxy_host = Settings.get_image_proxy_host()
+                        if proxy_host:
+                            status_info.append(f"Proxy: {Settings.get_image_proxy_type()}://{proxy_host}:{Settings.get_image_proxy_port()}")
+                        else:
+                            status_info.append("Proxy: Not configured")
+                        
+                    except Exception as e:
+                        status_info.append(f"Error getting status: {e}")
+                else:
+                    status_info.append("Client: Not running")
+                
+                status_text = '\n'.join(status_info)
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(status_text.encode('utf-8'))
+                Out.debug("Responded to server status command")
                 
             else:
                 # Java: return new HTTPResponseProcessorText("INVALID_COMMAND");
@@ -745,12 +1269,24 @@ class HTTPServer:
         self.allow_connections = False
         self.is_terminated = False
         
-        # Connection tracking
+        # Connection tracking (legacy - now using HTTPSessionManager)
         self.sessions: List = []
         self.session_count = 0
         
+        # Initialize session manager and bandwidth monitor
+        self.session_manager = HTTPSessionManager.get_instance()
+        self.bandwidth_monitor = HTTPBandwidthMonitor.get_instance()
+        self.stats = Stats.get_instance()
+        
+        # Configure session manager with max connections from settings
+        max_connections = Settings.get_int('max_connections', 100)
+        max_connections_per_ip = Settings.get_int('max_connections_per_ip', 10)
+        self.session_manager.set_connection_limits(max_connections, max_connections_per_ip)
+        
         # Flood control
         self.flood_control_table: Dict[str, float] = {}
+        
+        Out.debug(f"HTTP server initialized with max {max_connections} connections ({max_connections_per_ip} per IP)")
     
     def start_connection_listener(self, port: int) -> bool:
         """Start the HTTPS server on the specified port."""
@@ -911,9 +1447,15 @@ class HTTPServer:
         """Stop the HTTP server."""
         if self.server:
             Out.info("Stopping HTTP server...")
+            
+            # Shutdown session manager and close all active sessions
+            self.session_manager.shutdown()
+            
             self.server.shutdown()
             self.server.server_close()
             self.is_running = False
+            
+            Out.info("HTTP server stopped")
     
     def allow_normal_connections(self):
         """Allow normal connections to the server."""
@@ -921,9 +1463,11 @@ class HTTPServer:
         Out.info("HTTP server is now accepting connections")
     
     def nuke_old_connections(self):
-        """Clean up old connections (placeholder)."""
-        # In a real implementation, this would clean up stale connections
-        pass
+        """Clean up old connections."""
+        # Use our session manager to clean up old sessions
+        cleaned_count = self.session_manager.cleanup_expired_sessions()
+        if cleaned_count > 0:
+            Out.debug(f"Cleaned up {cleaned_count} expired sessions")
     
     def prune_flood_control_table(self):
         """Prune old entries from flood control table."""

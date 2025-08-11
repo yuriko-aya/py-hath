@@ -124,10 +124,19 @@ class ServerHandler:
         response = self._get_server_response(self.ACT_CLIENT_RESUME)
         return response is not None and response.get('status') == 'OK'
     
-    def still_alive_test(self, retry: bool) -> bool:
-        """Perform still alive test with server."""
-        response = self._get_server_response(self.ACT_STILL_ALIVE)
-        return response is not None and response.get('status') == 'OK'
+    def still_alive_test(self, resume: bool):
+        """
+        Perform still alive test with server using CakeSphere.
+        
+        Args:
+            resume: If True, this is a resume operation (called when client resumes)
+        """
+        # Java: CakeSphere cs = new CakeSphere(this, client);
+        # Java: cs.stillAlive(resume);
+        from .cake_sphere import get_cake_sphere_manager
+        
+        cake_sphere_manager = get_cake_sphere_manager()
+        cake_sphere_manager.still_alive_test(self, self.client, resume)
     
     def get_static_range_fetch_url(self, fileindex: str, xres: str, fileid: str) -> Optional[List[str]]:
         """Get URLs for fetching a file from static ranges."""
@@ -417,3 +426,159 @@ class ServerHandler:
         """Check if login has been validated."""
         # This would be implemented with a global state
         return True  # Placeholder
+    
+    def get_downloader_fetch_url(self, gid: int, page: int, fileindex: int, xres: str, retry: int) -> Optional[str]:
+        """Get download URL for a gallery file.
+        
+        Args:
+            gid: Gallery ID
+            page: Page number
+            fileindex: File index
+            xres: Resolution
+            retry: Retry count
+            
+        Returns:
+            Download URL or None if failed
+        """
+        try:
+            params = {
+                'gid': gid,
+                'page': page,
+                'fileindex': fileindex,
+                'xres': xres,
+                'retry': retry
+            }
+            
+            response = self._get_server_response(self.ACT_DOWNLOADER_FETCH, params)
+            
+            if response and response.get('status') == 'OK':
+                return response.get('response_text', '').strip()
+            else:
+                Out.warning(f"Failed to get download URL for gid={gid} page={page}")
+                return None
+                
+        except Exception as e:
+            Out.warning(f"Error getting download URL: {e}")
+            return None
+    
+    def report_downloader_failures(self, failures: List[str]):
+        """Report download failures to server.
+        
+        Args:
+            failures: List of failure identifiers
+        """
+        if not failures:
+            return
+        
+        try:
+            # Format failures for reporting
+            failure_data = '\n'.join(failures)
+            
+            response = self._get_server_response(self.ACT_DOWNLOADER_FAILREPORT, {'failures': failure_data})
+            
+            if response and response.get('status') == 'OK':
+                Out.debug(f"Reported {len(failures)} download failures to server")
+            else:
+                Out.warning("Failed to report download failures")
+                
+        except Exception as e:
+            Out.warning(f"Error reporting download failures: {e}")
+    
+    def get_url_query_string(self, action: str, additional_param: str = "") -> str:
+        """Get URL query string for server requests.
+        
+        Args:
+            action: Action to perform
+            additional_param: Additional parameter
+            
+        Returns:
+            URL query string
+        """
+        try:
+            # Base parameters required for all requests
+            params = {
+                'clientbuild': Settings.CLIENT_BUILD,
+                'clienttime': int(time.time() + Settings.get_server_time_delta()),
+                'clientid': Settings.get_client_id(),
+                'clientkey': Settings.get_client_key(),
+                'act': action
+            }
+            
+            # Add additional parameter if provided
+            if additional_param:
+                params['add'] = additional_param
+            
+            return urlencode(params)
+            
+        except Exception as e:
+            Out.warning(f"Error building query string: {e}")
+            return ""
+    
+    def notify_start(self) -> bool:
+        """Notify server that client startup is complete.
+        
+        Returns:
+            True if successful
+        """
+        try:
+            response = self._get_server_response(self.ACT_CLIENT_START)
+            
+            if response and response.get('status') == 'OK':
+                Out.info("Server notified of successful startup")
+                return True
+            else:
+                Out.warning("Failed to notify server of startup")
+                return False
+                
+        except Exception as e:
+            Out.warning(f"Error notifying server of startup: {e}")
+            return False
+    
+    def download_client_certificate(self) -> bool:
+        """Download client certificate from server.
+        
+        Returns:
+            True if successful
+        """
+        try:
+            Out.info("Downloading client certificate from server...")
+            
+            # Request certificate from server
+            response = self._get_server_response(self.ACT_GET_CERTIFICATE)
+            
+            if response and response.get('status') == 'OK':
+                cert_data = response.get('response_text', '')
+                
+                if cert_data:
+                    # Save certificate to file
+                    cert_path = Settings.get_data_dir() / 'client.p12'
+                    
+                    try:
+                        # Certificate data should be base64 encoded
+                        import base64
+                        cert_bytes = base64.b64decode(cert_data)
+                        
+                        # Write certificate file
+                        cert_path.write_bytes(cert_bytes)
+                        
+                        # Validate the certificate
+                        if self.is_certificate_valid():
+                            Out.info(f"Client certificate downloaded and saved to {cert_path}")
+                            return True
+                        else:
+                            Out.warning("Downloaded certificate failed validation")
+                            return False
+                            
+                    except Exception as e:
+                        Out.warning(f"Failed to save certificate: {e}")
+                        return False
+                else:
+                    Out.warning("Empty certificate data received from server")
+                    return False
+            else:
+                Out.warning("Failed to download certificate from server")
+                return False
+                
+        except Exception as e:
+            Out.warning(f"Error downloading client certificate: {e}")
+            return False
