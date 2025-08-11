@@ -2,6 +2,14 @@
 
 ## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes - Build 176)
 
+### Cache Management Improvements
+- **Proxy Files Now Saved to Cache**: Downloaded proxy files are now properly saved to cache directory
+  - After downloading and validating proxy files, they are saved to local cache for future requests
+  - Uses temporary file approach with `cache_handler.import_file_to_cache()` for safe storage
+  - Maintains all existing validation (size and SHA1 hash checks) before caching
+  - Eliminates repeated downloads of the same file, improving performance and reducing bandwidth
+  - **Impact**: Popular files remain available from cache after first proxy download, significantly improving response times
+
 ### Proxy File Serving Improvements
 - **Reverted to In-Memory Proxy Downloads**: Simplified proxy file serving to use full in-memory downloads instead of streaming
   - Downloads complete file into memory before serving to client
@@ -37,6 +45,7 @@
   - **Impact**: Enables Hath-Request header generation for authenticated downloads
 
 ### Proxy File Download System Fixes
+- **Added Cache Saving for Downloaded Files**: New `_save_downloaded_file_to_cache()` method saves proxy downloads to cache
 - **Resolved AttributeError Issues**: Fixed missing static method calls preventing proxy file serving
 - **Enhanced Authentication**: Proper Hath-Request header generation with client ID and key
 - **File Size Validation**: Proxy downloads now properly validate against maximum allowed file size

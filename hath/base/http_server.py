@@ -682,6 +682,9 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
                 Out.debug(f"Successfully downloaded file {file_id} ({len(file_data)} bytes)")
                 
+                # Save the downloaded file to cache
+                self._save_downloaded_file_to_cache(file_data, hv_file)
+                
                 # Update stats
                 Stats.fileRcvd()
                 Stats.bytesRcvd(len(file_data))
@@ -693,6 +696,41 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 continue
         
         return None
+    
+    def _save_downloaded_file_to_cache(self, file_data: bytes, hv_file) -> bool:
+        """Save downloaded file data to cache directory."""
+        try:
+            # Get cache handler
+            client = Settings.get_active_client()
+            cache_handler = client.get_cache_handler()
+            
+            if not cache_handler:
+                Out.warning("Cache handler not available, cannot save downloaded file")
+                return False
+            
+            # Create a temporary file to write the data
+            temp_dir = Settings.get_temp_dir()
+            temp_file = temp_dir / f"temp_{hv_file.file_id}_{int(time.time())}"
+            
+            # Write file data to temporary file
+            temp_file.write_bytes(file_data)
+            
+            # Import the temporary file to cache
+            success = cache_handler.import_file_to_cache(temp_file, hv_file)
+            
+            if success:
+                Out.debug(f"Successfully saved downloaded file {hv_file.file_id} to cache")
+            else:
+                Out.warning(f"Failed to save downloaded file {hv_file.file_id} to cache")
+                # Clean up temp file if import failed
+                if temp_file.exists():
+                    temp_file.unlink()
+            
+            return success
+            
+        except Exception as e:
+            Out.warning(f"Error saving downloaded file to cache: {e}")
+            return False
     
     def _guess_content_type_from_file_id(self, file_id: str) -> str:
         """Guess content type from file ID extension."""
