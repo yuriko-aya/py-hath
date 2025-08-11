@@ -2,9 +2,13 @@
 Multiprocess HTTP server implementation.
 """
 
+import ssl
+import tempfile
+import os
 import queue
 import time
 import threading
+from pathlib import Path
 from typing import Dict, Any
 
 from .out import Out
@@ -132,7 +136,7 @@ class MultiprocessHTTPServer:
     def run(self):
         """Run the HTTP server."""
         try:
-            Out.info("Starting multiprocess HTTP server...")
+            Out.info("Starting multiprocess HTTPS server...")
             
             # Start heartbeat thread
             self._start_heartbeat()
@@ -172,14 +176,14 @@ class MultiprocessHTTPServer:
         self.heartbeat_thread.start()
     
     def _create_server(self):
-        """Create HTTP server instance."""
+        """Create HTTP server instance with SSL support."""
         from http.server import ThreadingHTTPServer
         
         # Get server configuration
         port = Settings.get_client_port()
         max_connections = Settings.get_int('max_connections', 100)
         
-        Out.info(f"Creating HTTP server on port {port} with max {max_connections} connections")
+        Out.info(f"Creating HTTPS server on port {port} with max {max_connections} connections")
         
         # Create request handler class with shared resources
         def handler_factory(*args, **kwargs):
@@ -191,24 +195,145 @@ class MultiprocessHTTPServer:
             handler_factory
         )
         
+        # Configure SSL/TLS
+        if not self._configure_ssl():
+            Out.error("Failed to configure SSL - multiprocess HTTP server will not start")
+            raise Exception("SSL configuration failed")
+        
         # Configure server
         self.server.timeout = 1.0  # Check for shutdown every second
         
-        Out.info(f"HTTP server created on port {port}")
+        Out.info(f"HTTPS server created on port {port}")
+    
+    def _configure_ssl(self) -> bool:
+        """Configure SSL/TLS for the multiprocess server."""
+        try:
+            # Get server handler to check/download certificate
+            client = Settings.get_active_client()
+            if not client:
+                Out.error("No active client available for SSL configuration")
+                return False
+            
+            server_handler = client.get_server_handler()
+            if not server_handler:
+                Out.error("No server handler available for SSL configuration")
+                return False
+            
+            # Check if certificate is valid, download if needed
+            if not server_handler.is_certificate_valid():
+                Out.info("SSL certificate invalid or missing, downloading from server...")
+                if not server_handler.download_certificate():
+                    Out.error("Failed to download SSL certificate")
+                    return False
+            
+            # Get certificate paths
+            p12_path, _ = server_handler.get_certificate_paths()
+            
+            # Create SSL context
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            
+            # Load PKCS#12 certificate directly
+            try:
+                if Path(p12_path).exists():
+                    from cryptography.hazmat.primitives.serialization import pkcs12
+                    from cryptography.hazmat.primitives import serialization
+                    
+                    # Read PKCS#12 data
+                    with open(p12_path, 'rb') as f:
+                        p12_data = f.read()
+                    
+                    # Try loading with different passwords - client key is the primary password
+                    passwords_to_try = [
+                        Settings.get_client_key().encode(),  # Most likely - client key
+                        None, 
+                        b'', 
+                        str(Settings.get_client_id()).encode(),
+                        b'hentai@home'
+                    ]
+                    
+                    private_key = None
+                    certificate = None
+                    additional_certificates = None
+                    
+                    for password in passwords_to_try:
+                        try:
+                            private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+                                p12_data, password=password
+                            )
+                            Out.debug(f"Successfully loaded PKCS#12 for SSL with password: {'None' if password is None else 'provided'}")
+                            break
+                        except Exception as e:
+                            Out.debug(f"Failed to load PKCS#12 for SSL with password attempt: {e}")
+                            continue
+                    
+                    if not (private_key and certificate):
+                        raise Exception("Could not load certificate and private key from PKCS#12")
+                    
+                    # Create temporary PEM files for SSL context (including full chain if available)
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.crt') as cert_file:
+                        # Write the main certificate
+                        cert_file.write(certificate.public_bytes(serialization.Encoding.PEM))
+                        
+                        # Add additional certificates to the chain if available
+                        if additional_certificates:
+                            for additional_cert in additional_certificates:
+                                cert_file.write(additional_cert.public_bytes(serialization.Encoding.PEM))
+                        
+                        temp_cert_path = cert_file.name
+                    
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.key') as key_file:
+                        key_file.write(private_key.private_bytes(
+                            encoding=serialization.Encoding.PEM,
+                            format=serialization.PrivateFormat.PKCS8,
+                            encryption_algorithm=serialization.NoEncryption()
+                        ))
+                        temp_key_path = key_file.name
+                    
+                    # Load into SSL context
+                    ssl_context.load_cert_chain(temp_cert_path, temp_key_path)
+                    
+                    # Clean up temporary files
+                    try:
+                        os.unlink(temp_cert_path)
+                        os.unlink(temp_key_path)
+                    except:
+                        pass  # Ignore cleanup errors
+                    
+                    Out.debug("Loaded PKCS#12 certificate for SSL in multiprocess server")
+                else:
+                    raise FileNotFoundError("PKCS#12 certificate file not found")
+                    
+            except Exception as e:
+                Out.error(f"Failed to configure SSL in multiprocess server: {e}")
+                return False
+            
+            # Configure SSL settings for H@H
+            ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS')
+            ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+            
+            # Apply SSL context to server socket
+            self.server.socket = ssl_context.wrap_socket(self.server.socket, server_side=True)
+            
+            Out.info("SSL/TLS configured successfully for multiprocess HTTP server")
+            return True
+            
+        except Exception as e:
+            Out.error(f"Failed to configure SSL for multiprocess server: {e}")
+            return False
     
     def _serve_forever(self):
-        """Serve HTTP requests until shutdown."""
-        Out.info("HTTP server ready to accept connections")
+        """Serve HTTPS requests until shutdown."""
+        Out.info("HTTPS server ready to accept connections")
         
         while not self.shutdown_flag and not self.shared.shutdown_event.is_set():
             try:
                 self.server.handle_request()
             except OSError as e:
                 if not self.shutdown_flag:
-                    Out.warning(f"HTTP server socket error: {e}")
+                    Out.warning(f"HTTPS server socket error: {e}")
                 break
             except Exception as e:
-                Out.warning(f"HTTP server error: {e}")
+                Out.warning(f"HTTPS server error: {e}")
                 time.sleep(0.1)
     
     def _cleanup(self):
@@ -218,8 +343,8 @@ class MultiprocessHTTPServer:
         if self.server:
             try:
                 self.server.server_close()
-                Out.info("HTTP server closed")
+                Out.info("HTTPS server closed")
             except Exception as e:
-                Out.warning(f"Error closing HTTP server: {e}")
+                Out.warning(f"Error closing HTTPS server: {e}")
         
-        Out.info("HTTP server cleanup complete")
+        Out.info("HTTPS server cleanup complete")

@@ -68,6 +68,16 @@ The py-hath client now supports multiprocess mode for enhanced performance and r
 - ✅ **Fault Isolation**: HTTP server crash won't affect downloads
 - ✅ **Process Recovery**: Automatic restart of failed processes
 - ✅ **Resource Management**: Better control over memory and CPU usage
+
+### Security Features
+- ✅ **Full SSL/TLS Support**: HTTPS server with automatic certificate management
+- ✅ **Client Authentication**: PKCS#12 certificate loading and validation
+- ✅ **Modern Encryption**: TLS 1.2+ with secure cipher suites (ECDHE+AESGCM, CHACHA20)
+- ✅ **Certificate Auto-Download**: Automatic certificate refresh from H@H servers
+- ✅ **Process Isolation**: Security boundaries between processes
+- ✅ **Validated Downloads**: SHA1 hash verification for all files
+
+*The multiprocess implementation maintains the same security level as single-process mode.*
 - ✅ **Graceful Degradation**: System continues if one process fails
 
 ### Operational Benefits
