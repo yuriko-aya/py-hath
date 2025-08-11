@@ -57,6 +57,66 @@ class HVFile:
                 return False
         
         return True
+    
+    def getSize(self) -> int:
+        """Get the size of the file (Java compatibility method)."""
+        return self.size
+    
+    def getHash(self) -> str:
+        """Get the SHA1 hash of the file (Java compatibility method)."""
+        return self.sha1_hash
+    
+    @property
+    def hash(self) -> str:
+        """Get the SHA1 hash of the file (property for compatibility)."""
+        return self.sha1_hash
+
+    @staticmethod
+    def getHVFileFromFileid(file_id: str) -> Optional['HVFile']:
+        """Create an HVFile instance from a file ID string.
+        
+        Args:
+            file_id: File ID in format "hash-size-type" or "hash-size-xres-yres-type"
+            
+        Returns:
+            HVFile instance or None if invalid format
+        """
+        if not HVFile.is_valid_hv_fileid(file_id):
+            Out.warning(f"Invalid fileid \"{file_id}\"")
+            return None
+            
+        try:
+            parts = file_id.split('-')
+            hash_part = parts[0]
+            size = int(parts[1])
+            
+            # Extract just the hash from the full file_id for validation
+            sha1_hash = hash_part
+            
+            return HVFile(file_id, size, sha1_hash)
+        except Exception as e:
+            Out.warning(f"Failed to parse fileid \"{file_id}\": {e}")
+            return None
+    
+    @staticmethod 
+    def is_valid_hv_fileid(file_id: str) -> bool:
+        """Check if a file ID has valid format.
+        
+        Args:
+            file_id: File ID to validate
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        import re
+        
+        # Pattern for hash-size-xres-yres-type format
+        pattern1 = r'^[a-f0-9]{40}-[0-9]{1,10}-[0-9]{1,5}-[0-9]{1,5}-(jpg|png|gif|mp4|wbm|wbp|avf|jxl)$'
+        
+        # Pattern for hash-size-type format (no resolution)
+        pattern2 = r'^[a-f0-9]{40}-[0-9]{1,10}-(jpg|png|gif|mp4|wbm|wbp|avf|jxl)$'
+        
+        return bool(re.match(pattern1, file_id) or re.match(pattern2, file_id))
 
 
 class CacheHandler:

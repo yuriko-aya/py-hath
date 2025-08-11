@@ -1,6 +1,38 @@
 # py-hath Changes
 
-## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes)
+## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes - Build 176)
+
+### Java Method Compatibility Improvements
+- **Added HVFile.getHVFileFromFileid Static Method**
+  - Implemented missing static method to create HVFile instances from file ID strings
+  - Added `is_valid_hv_fileid()` static method with regex validation matching Java implementation
+  - Supports both file ID formats: `hash-size-type` and `hash-size-xres-yres-type`
+  - Added Java compatibility methods: `getSize()`, `getHash()`, and `hash` property to HVFile class
+  - **Impact**: Resolves `AttributeError` when proxy file serving attempts to use `HVFile.getHVFileFromFileid`
+
+- **Added Settings Java Compatibility Methods**
+  - `Settings.getClientID()` and `getClientKey()` - Client identification methods
+  - `Settings.getMaxAllowedFileSize()` - Maximum file size limits for proxy downloads
+  - `Settings.getTempDir()` - Temporary directory path for proxy file processing
+  - `Settings.getImageProxy()` - Constructs proxy URL from host/port/type components
+  - **Impact**: Resolves proxy download initialization errors from missing Java-style method names
+
+- **Added Tools Java Compatibility Methods**
+  - `Tools.getSHA1String()` - SHA1 hash calculation (wraps existing `get_sha1_string()` method)
+  - **Impact**: Enables Hath-Request header generation for authenticated downloads
+
+### Proxy File Download System Fixes
+- **Resolved AttributeError Issues**: Fixed missing static method calls preventing proxy file serving
+- **Enhanced Authentication**: Proper Hath-Request header generation with client ID and key
+- **File Size Validation**: Proxy downloads now properly validate against maximum allowed file size
+- **Temporary File Management**: Proper temporary directory usage for downloaded files
+- **Proxy Configuration**: Support for HTTP/HTTPS proxy settings in download requests
+
+### Client Operational Stability
+- **Eliminated Java Method Compatibility Errors**: Client now runs without Java-style method AttributeErrors
+- **Proxy Download Functionality**: Proxy file serving now works correctly for files not in local cache
+- **Background Process Stability**: Gallery downloader and other background processes operate without interruption
+- **Startup Sequence**: Complete startup process works without method resolution failures
 
 ### Cache System Improvements
 - **Complete Java Parity for Persistent Cache Data**

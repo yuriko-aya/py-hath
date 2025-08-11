@@ -217,9 +217,37 @@ class Settings:
         return cls._client_id
     
     @classmethod
+    def getClientID(cls) -> int:
+        """Get the client ID (Java compatibility method)."""
+        return cls._client_id
+    
+    @classmethod
     def get_client_key(cls) -> str:
         """Get the client key."""
         return cls._client_key
+    
+    @classmethod
+    def getClientKey(cls) -> str:
+        """Get the client key (Java compatibility method)."""
+        return cls._client_key
+    
+    @classmethod
+    def getMaxAllowedFileSize(cls) -> int:
+        """Get the maximum allowed file size (Java compatibility method)."""
+        return cls.get_max_allowed_file_size()
+    
+    @classmethod
+    def getTempDir(cls) -> Path:
+        """Get the temp directory (Java compatibility method)."""
+        return cls.get_temp_dir()
+    
+    @classmethod
+    def getImageProxy(cls) -> Optional[str]:
+        """Get the image proxy URL (Java compatibility method)."""
+        if cls._image_proxy_host and cls._image_proxy_port:
+            proxy_type = cls._image_proxy_type or "http"
+            return f"{proxy_type}://{cls._image_proxy_host}:{cls._image_proxy_port}"
+        return None
     
     @classmethod
     def get_client_port(cls) -> int:

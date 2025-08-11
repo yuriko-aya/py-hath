@@ -21,6 +21,11 @@ class Tools:
         return hashlib.sha1(data).hexdigest()
     
     @staticmethod
+    def getSHA1String(data: Union[str, bytes]) -> str:
+        """Calculate SHA1 hash of string or bytes (Java compatibility method)."""
+        return Tools.get_sha1_string(data)
+    
+    @staticmethod
     def parse_additional(additional: str) -> dict:
         """Parse additional parameter string into key-value dictionary.
         
