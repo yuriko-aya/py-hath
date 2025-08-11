@@ -322,11 +322,14 @@ class HTTPSessionManager:
                 Out.debug(f"Closed session {session_id} "
                          f"({len(self._sessions)} remaining connections)")
     
-    def cleanup_expired_sessions(self, max_idle_time: float = 300.0):
+    def cleanup_expired_sessions(self, max_idle_time: float = 300.0) -> int:
         """Clean up expired sessions.
         
         Args:
             max_idle_time: Maximum idle time before expiration
+            
+        Returns:
+            Number of sessions cleaned up
         """
         expired_sessions = []
         
@@ -339,6 +342,8 @@ class HTTPSessionManager:
         for session_id in expired_sessions:
             Out.debug(f"Closing expired session {session_id}")
             self.close_session(session_id)
+            
+        return len(expired_sessions)
     
     def get_session_count(self) -> int:
         """Get current number of active sessions.

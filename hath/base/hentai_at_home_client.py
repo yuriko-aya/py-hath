@@ -201,42 +201,59 @@ class HentaiAtHomeClient:
     
     def _perform_periodic_tasks(self):
         """Perform periodic maintenance tasks."""
-        # Server communication
-        if self.thread_skip_counter % 11 == 0:
-            if self.server_handler:
-                self.server_handler.still_alive_test(False)
-        
-        # Certificate management - check every 60 cycles (roughly every 30 minutes)
-        if self.thread_skip_counter % 60 == 0:
-            if self.do_cert_refresh or (self.http_server and self.http_server.is_cert_expired()):
-                Out.info("SSL certificate expired or refresh requested, downloading new certificate...")
-                if self.server_handler and self.server_handler.download_certificate():
-                    Out.info("SSL certificate refreshed successfully")
-                    self.do_cert_refresh = False
-                else:
-                    Out.error("Failed to refresh SSL certificate")
-        
-        # Cache maintenance
-        if self.cache_handler:
-            self.cache_handler.cycle_lru_cache_table()
+        try:
+            # Server communication
+            if self.thread_skip_counter % 11 == 0:
+                Out.debug("Performing server communication check...")
+                if self.server_handler:
+                    self.server_handler.still_alive_test(False)
             
-            # Save cache state periodically (every 30 cycles ~ 15 minutes)
-            if self.thread_skip_counter % 30 == 0:
-                self.cache_handler.save_cache_state()
+            # Certificate management - check every 60 cycles (roughly every 30 minutes)
+            if self.thread_skip_counter % 60 == 0:
+                Out.debug("Checking certificate expiration...")
+                if self.do_cert_refresh or (self.http_server and self.http_server.is_cert_expired()):
+                    Out.info("SSL certificate expired or refresh requested, downloading new certificate...")
+                    if self.server_handler and self.server_handler.download_certificate():
+                        Out.info("SSL certificate refreshed successfully")
+                        self.do_cert_refresh = False
+                    else:
+                        Out.error("Failed to refresh SSL certificate")
             
-            # Check free disk space
-            for _ in range(self.cache_handler.get_prune_aggression()):
-                if not self.cache_handler.recheck_free_disk_space():
-                    Out.error("Disk is full. Shutting down to prevent damage.")
-                    self.die_with_error("Out of disk space")
-                    return
-        
-        # HTTP server maintenance
-        if self.http_server:
-            self.http_server.nuke_old_connections()
+            # Cache maintenance
+            if self.cache_handler:
+                Out.debug("Performing cache maintenance...")
+                self.cache_handler.cycle_lru_cache_table()
+                
+                # Save cache state periodically (every 30 cycles ~ 15 minutes)
+                if self.thread_skip_counter % 30 == 0:
+                    Out.debug("Saving cache state...")
+                    self.cache_handler.save_cache_state()
+                
+                # Check free disk space
+                Out.debug("Checking disk space...")
+                prune_aggression = self.cache_handler.get_prune_aggression()
+                Out.debug(f"Prune aggression: {prune_aggression}")
+                for i in range(prune_aggression):
+                    Out.debug(f"Disk space check iteration {i + 1}/{prune_aggression}")
+                    if not self.cache_handler.recheck_free_disk_space():
+                        Out.error("Disk is full. Shutting down to prevent damage.")
+                        self.die_with_error("Out of disk space")
+                        return
+            
+            # HTTP server maintenance
+            if self.http_server:
+                Out.debug("Performing HTTP server maintenance...")
+                self.http_server.nuke_old_connections()
+                
+        except Exception as e:
+            Out.error(f"Error in periodic tasks: {e}")
+            raise
     
     def is_suspended(self) -> bool:
         """Check if the client is suspended."""
+        # Ensure suspended_until is a valid number
+        if self.suspended_until is None:
+            self.suspended_until = 0
         return self.suspended_until > time.time() * 1000
     
     def suspend_master_thread(self, suspend_time: int) -> bool:

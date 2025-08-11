@@ -73,11 +73,12 @@ class ServerHandler:
         response = self._get_server_response(self.ACT_CLIENT_SETTINGS)
         
         if response and response.get('status') == 'OK':
+            Out.info("Applying refreshed settings...")
             self._parse_and_update_settings(response.get('response_text', ''))
-            Out.info("Finished applying settings")
+            Out.info("Finished applying refreshed settings")
             return True
         else:
-            Out.warning("Failed to refresh settings")
+            Out.warning(f"Failed to refresh settings: {response}")
             return False
     
     def refresh_server_stat(self) -> bool:
@@ -271,32 +272,153 @@ class ServerHandler:
         if not settings_text:
             return
         
+        Out.debug("=== Parsing server settings ===")
+        Out.debug(f"Raw settings response:\n{settings_text}")
+        
+        # Track settings for logging
+        parsed_settings = {}
+        
         for line in settings_text.split('\n'):
             line = line.strip()
-            if '=' in line:
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip()
+            if not line or '=' not in line:
+                continue
                 
-                # Parse specific settings
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            
+            # Store for logging
+            parsed_settings[key] = value
+            
+            # Parse specific settings (matching Java parseAndUpdateSettings)
+            try:
                 if key == 'client_port' or key == 'port':
-                    Out.debug(f"Setting client port to: {value}")
-                    Settings.set_client_port(int(value))
-                elif key == 'disk_limit':
-                    Settings.set_disk_limit_bytes(int(value) * 1024 * 1024)  # MB to bytes
+                    port = int(value)
+                    Settings.set_client_port(port)
+                    Out.info(f"Client port set to: {port}")
+                    
+                elif key == 'host':
+                    Settings._client_host = value
+                    Out.info(f"Client host set to: {value}")
+                    
+                elif key == 'throttle_bytes':
+                    throttle = int(value)
+                    Settings.set_throttle_bytes_per_sec(throttle)
+                    Out.info(f"Throttle set to: {throttle} bytes/sec")
+                    
+                elif key == 'disklimit_bytes':
+                    # Already in bytes
+                    disk_limit = int(value)
+                    Settings.set_disk_limit_bytes(disk_limit)
+                    Out.info(f"Disk limit set to: {disk_limit} bytes")
+                    
+                elif key == 'diskremaining_bytes':
+                    # Already in bytes  
+                    disk_remaining = int(value)
+                    Settings._disk_remaining_bytes = disk_remaining
+                    Out.debug(f"Disk remaining: {disk_remaining} bytes")
+                    
                 elif key == 'static_ranges':
                     self._parse_static_ranges(value)
-                # Add more setting parsing as needed
+                    Out.info(f"Static ranges updated: {Settings.get_static_range_count()} ranges")
+                    
+                elif key == 'rpc_server_port':
+                    rpc_port = int(value)
+                    Settings._rpc_server_port = rpc_port
+                    Out.debug(f"RPC server port: {rpc_port}")
+                    
+                elif key == 'max_connections':
+                    max_conn = int(value)
+                    Settings._override_conns = max_conn
+                    Out.info(f"Max connections set to: {max_conn}")
+                    
+                elif key == 'request_server':
+                    # Handle RPC server hostnames
+                    if value:
+                        Settings._rpc_servers = value.split(';')
+                        Out.info(f"RPC servers: {Settings._rpc_servers}")
+                        
+                elif key == 'warn_new_client':
+                    Settings._warn_new_client = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Warn new client: {Settings._warn_new_client}")
+                    
+                elif key == 'use_less_memory':
+                    Settings._use_less_memory = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Use less memory: {Settings._use_less_memory}")
+                    
+                elif key == 'disable_bwm':
+                    Settings._disable_bwm = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Disable BWM: {Settings._disable_bwm}")
+                    
+                elif key == 'disable_downloads':
+                    Settings._disable_download_bwm = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Disable download BWM: {Settings._disable_download_bwm}")
+                    
+                elif key == 'disable_logging':
+                    Settings._disable_logs = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Disable logging: {Settings._disable_logs}")
+                    
+                elif key == 'enable_log_flushing':
+                    Settings._flush_logs = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Enable log flushing: {Settings._flush_logs}")
+                    
+                elif key == 'verify_cache':
+                    Settings._verify_cache = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Verify cache: {Settings._verify_cache}")
+                    
+                elif key == 'disable_ip_origin_check':
+                    Settings._disable_ip_origin_check = value.lower() in ['true', '1', 'yes']
+                    Out.debug(f"Disable IP origin check: {Settings._disable_ip_origin_check}")
+                    
+                elif key == 'image_proxy_host':
+                    Settings._image_proxy_host = value if value else None
+                    Out.debug(f"Image proxy host: {value}")
+                    
+                elif key == 'image_proxy_port':
+                    if value:
+                        Settings._image_proxy_port = int(value)
+                        Out.debug(f"Image proxy port: {value}")
+                        
+                elif key == 'image_proxy_type':
+                    Settings._image_proxy_type = value if value else None
+                    Out.debug(f"Image proxy type: {value}")
+                    
+                else:
+                    # Log unknown settings for debugging
+                    Out.debug(f"Unknown setting: {key} = {value}")
+                    
+            except (ValueError, TypeError) as e:
+                Out.warning(f"Failed to parse setting {key}={value}: {e}")
+        
+        # Log summary of all parsed settings
+        Out.debug("=== Settings parsing summary ===")
+        for key, value in parsed_settings.items():
+            Out.debug(f"  {key} = {value}")
+        Out.debug(f"Total settings parsed: {len(parsed_settings)}")
     
     def _parse_static_ranges(self, ranges_text: str):
         """Parse static ranges from server response."""
         if not ranges_text:
+            Settings._static_ranges = {}
+            Settings._current_static_range_count = 0
             return
         
-        # Static ranges are typically in format like "01,02,03,04"
-        ranges = ranges_text.split(',')
-        Settings._static_ranges = {range_id.strip(): 1 for range_id in ranges if range_id.strip()}
-        Settings._current_static_range_count = len(Settings._static_ranges)
+        Out.debug(f"Parsing static ranges: {ranges_text}")
+        
+        # Static ranges use semicolon separator, not comma
+        # Format is typically: "01;02;03;04" or similar
+        ranges = ranges_text.split(';')
+        range_dict = {}
+        
+        for range_id in ranges:
+            range_id = range_id.strip()
+            if range_id:
+                range_dict[range_id] = 1  # Value is 1 for active ranges
+        
+        Settings._static_ranges = range_dict
+        Settings._current_static_range_count = len(range_dict)
+        
+        Out.debug(f"Parsed {len(range_dict)} static ranges: {list(range_dict.keys())}")
     
     def download_certificate(self) -> bool:
         """Download SSL certificate from server."""
@@ -401,16 +523,16 @@ class ServerHandler:
                         
                         if certificate:
                             # Check if certificate is expired or expires soon (within 24 hours)
-                            # Use timezone-naive datetime to match certificate timestamps
-                            now = datetime.datetime.now()
+                            # Use timezone-aware datetime to match certificate timestamps
+                            now = datetime.datetime.now(datetime.timezone.utc)
                             expires_soon = now + datetime.timedelta(hours=24)
                             
-                            # Certificate timestamps are typically timezone-naive UTC
-                            if certificate.not_valid_after <= expires_soon:
-                                Out.info(f"SSL certificate is expired or expires soon (expires: {certificate.not_valid_after})")
+                            # Use UTC-aware certificate timestamp
+                            if certificate.not_valid_after_utc <= expires_soon:
+                                Out.info(f"SSL certificate is expired or expires soon (expires: {certificate.not_valid_after_utc})")
                                 return False
                             
-                            Out.debug(f"SSL certificate is valid until: {certificate.not_valid_after}")
+                            Out.debug(f"SSL certificate is valid until: {certificate.not_valid_after_utc}")
                             return True
                 except Exception as e:
                     Out.debug(f"Failed to validate PKCS#12 certificate: {e}")

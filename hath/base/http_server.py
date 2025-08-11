@@ -53,8 +53,8 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     def finish(self):
         """Clean up the request handler and session."""
         if self.session:
-            HTTPSessionManager.get_instance().end_session(self.session.session_id)
-            Out.debug(f"Ended session {self.session.session_id}")
+            HTTPSessionManager.get_instance().close_session(self.session.session_id)
+            Out.debug(f"Closed session {self.session.session_id}")
         super().finish()
     
     def do_GET(self):

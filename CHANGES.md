@@ -1,6 +1,55 @@
 # py-hath Changes
 
-## [Version 1.6.4#py] - 2025-08-11
+## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes)
+
+### Critical Bug Fixes
+- **Fixed NoneType comparison errors that prevented client startup**
+  - Fixed `is_suspended()` method to handle `None` values in `suspended_until` field
+  - Fixed `get_client_port()` method to handle `None` values in `_client_port` field  
+  - Fixed `get_disk_limit_bytes()` method to handle `None` values in `_disk_limit_bytes` field
+  - Fixed `login_credentials_are_syntax_valid()` method to handle `None` values in credentials
+  - Fixed `get_cache_size_with_overhead()` method to handle `None` values in `cache_size` field
+  - Fixed `cleanup_expired_sessions()` method to return integer count instead of `None`
+
+### HTTP Server Stability
+- **Fixed session management errors**
+  - Fixed `HTTPRequestHandler.finish()` method to use correct `close_session()` instead of non-existent `end_session()`
+  - Enhanced HTTP session management with proper return values for cleanup operations
+
+### Server Communication Improvements  
+- **Enhanced Settings Parsing**: Completely rewrote `_parse_and_update_settings()` to match Java H@H client exactly
+  - Added support for 20+ setting types including client_port, throttle_bytes, disk limits, static ranges
+  - Fixed setting key names to match actual RPC response format:
+    - `client_host` → `host`
+    - `disk_limit` → `disklimit_bytes` (already in bytes, no conversion needed)
+    - `disk_remaining` → `diskremaining_bytes` (already in bytes, no conversion needed)
+  - Added comprehensive debug logging for all settings parsing operations
+  - Enhanced boolean setting parsing for flags like `warn_new_client`, `use_less_memory`, etc.
+  - Added proper error handling and validation for malformed settings
+
+- **Fixed Static Ranges Protocol**: Fixed `_parse_static_ranges()` to use semicolon (`;`) delimiter instead of comma, matching Java implementation
+- **Added Comprehensive Debug Logging**: Added detailed logging for raw RPC responses and parsed settings summary
+
+### SSL Certificate Management
+- **Fixed deprecated cryptography API usage**:
+  - Replaced `certificate.not_valid_after` with `certificate.not_valid_after_utc`
+  - Updated datetime handling to use timezone-aware UTC datetime objects
+  - Eliminated `CryptographyDeprecationWarning` about naive datetime objects
+- **Improved certificate validation** with proper timezone handling
+
+### Development & Debugging
+- **Enhanced Debug Logging**: Added comprehensive debug logging to main client loop and periodic tasks
+- **Improved Error Reporting**: Enhanced error reporting in `_perform_periodic_tasks()` with full stack traces
+- **Code Quality**: Added null-safety checks throughout codebase to prevent similar NoneType comparison issues
+
+### Technical Summary
+- **Root Cause**: The client was failing during the main operational loop due to multiple NoneType comparison errors
+- **Impact**: Client could successfully start up, connect to server, download certificates, and initialize all components, but would crash immediately when entering normal operation mode
+- **Resolution**: Added comprehensive null checks and proper return values throughout the codebase, particularly in session management and settings handling
+
+---
+
+## [Version 1.6.4#py] - 2025-08-11 (Initial Release)
 
 ### Major Components Added
 

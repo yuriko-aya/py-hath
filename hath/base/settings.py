@@ -101,6 +101,10 @@ class Settings:
     @classmethod
     def login_credentials_are_syntax_valid(cls) -> bool:
         """Check if login credentials have valid syntax."""
+        if cls._client_id is None:
+            cls._client_id = 0
+        if cls._client_key is None:
+            cls._client_key = ""
         pattern = f"^[a-zA-Z0-9]{{{cls.CLIENT_KEY_LENGTH}}}$"
         return cls._client_id > 0 and re.match(pattern, cls._client_key) is not None
     
@@ -220,6 +224,8 @@ class Settings:
     @classmethod
     def get_client_port(cls) -> int:
         """Get the client port."""
+        if cls._client_port is None:
+            cls._client_port = 0
         return cls._client_port if cls._client_port > 0 else 0
     
     @classmethod
@@ -269,6 +275,8 @@ class Settings:
     @classmethod
     def get_disk_limit_bytes(cls) -> int:
         """Get the disk limit in bytes."""
+        if cls._disk_limit_bytes is None:
+            cls._disk_limit_bytes = 0
         return cls._disk_limit_bytes
     
     @classmethod
