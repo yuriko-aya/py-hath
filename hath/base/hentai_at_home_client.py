@@ -11,6 +11,7 @@ from typing import List, Optional
 from .out import Out
 from .settings import Settings
 from .input_query_handler_cli import InputQueryHandlerCLI
+from .stats import Stats
 
 
 class HentaiAtHomeClient:
@@ -73,6 +74,13 @@ class HentaiAtHomeClient:
         Out.info("Copyright (c) 2008-2024, E-Hentai.org - all rights reserved.")
         Out.info("This software comes with ABSOLUTELY NO WARRANTY. This is free software, and you are welcome to modify and redistribute it under the GPL v3 license.")
         
+        # Initialize statistics system
+        Stats.reset_stats()
+        Stats.set_program_status("Logging in to main server...")
+        
+        # Enable bytes sent history tracking for performance monitoring
+        Stats.track_bytes_sent_history()
+        
         # Load login credentials
         Settings.load_client_login_from_file()
         
@@ -89,8 +97,12 @@ class HentaiAtHomeClient:
         """Initialize all client components."""
         Out.info("Initializing client components...")
         
-        # Import and initialize components here
-        # For now, we'll create placeholder implementations
+        # Initialize client API for programmatic control
+        from .client_api import ClientAPI
+        self.client_api = ClientAPI(self)
+        
+        # Update stats
+        Stats.set_program_status("Initializing client API...")
         
         # Initialize server handler
         from .server_handler import ServerHandler
@@ -98,6 +110,9 @@ class HentaiAtHomeClient:
         
         # Load client settings from server
         self.server_handler.load_client_settings_from_server()
+        
+        # Update stats
+        Stats.set_program_status("Initializing cache handler...")
         
         # Initialize cache handler
         from .cache_handler import CacheHandler
@@ -111,6 +126,9 @@ class HentaiAtHomeClient:
         if self.is_shutting_down():
             return
         
+        # Update stats
+        Stats.set_program_status("Starting HTTP server...")
+        
         # Initialize HTTP server
         from .http_server import HTTPServer
         self.http_server = HTTPServer(self)
@@ -120,6 +138,9 @@ class HentaiAtHomeClient:
             self.die_with_error("Failed to initialize HTTPServer")
             return
         
+        # Update stats
+        Stats.set_program_status("Sending startup notification...")
+        
         # Notify server that startup is complete
         Out.info("Notifying the server that we have finished starting up the client...")
         
@@ -128,8 +149,23 @@ class HentaiAtHomeClient:
             Out.info("Startup notification failed.")
             return
         
+        # Initialize gallery downloader for bulk downloads
+        if Settings.get_bool('enable_gallery_downloader', True):
+            Out.info("Starting gallery downloader...")
+            from .gallery_downloader import GalleryDownloader
+            try:
+                self.gallery_downloader = GalleryDownloader(self)
+                Out.info("Gallery downloader started successfully")
+            except Exception as e:
+                Out.warning(f"Failed to start gallery downloader: {e}")
+                # Non-fatal error - continue without gallery downloader
+        
         self.http_server.allow_normal_connections()
         self.report_shutdown = True
+        
+        # Update stats to running state
+        Stats.program_started()
+        Stats.set_program_status("Running normally")
         
         Out.info("Startup completed successfully. Starting normal operation")
     
@@ -165,42 +201,59 @@ class HentaiAtHomeClient:
     
     def _perform_periodic_tasks(self):
         """Perform periodic maintenance tasks."""
-        # Server communication
-        if self.thread_skip_counter % 11 == 0:
-            if self.server_handler:
-                self.server_handler.still_alive_test(False)
-        
-        # Certificate management - check every 60 cycles (roughly every 30 minutes)
-        if self.thread_skip_counter % 60 == 0:
-            if self.do_cert_refresh or (self.http_server and self.http_server.is_cert_expired()):
-                Out.info("SSL certificate expired or refresh requested, downloading new certificate...")
-                if self.server_handler and self.server_handler.download_certificate():
-                    Out.info("SSL certificate refreshed successfully")
-                    self.do_cert_refresh = False
-                else:
-                    Out.error("Failed to refresh SSL certificate")
-        
-        # Cache maintenance
-        if self.cache_handler:
-            self.cache_handler.cycle_lru_cache_table()
+        try:
+            # Server communication
+            if self.thread_skip_counter % 11 == 0:
+                Out.debug("Performing server communication check...")
+                if self.server_handler:
+                    self.server_handler.still_alive_test(False)
             
-            # Save cache state periodically (every 30 cycles ~ 15 minutes)
-            if self.thread_skip_counter % 30 == 0:
-                self.cache_handler.save_cache_state()
+            # Certificate management - check every 60 cycles (roughly every 30 minutes)
+            if self.thread_skip_counter % 60 == 0:
+                Out.debug("Checking certificate expiration...")
+                if self.do_cert_refresh or (self.http_server and self.http_server.is_cert_expired()):
+                    Out.info("SSL certificate expired or refresh requested, downloading new certificate...")
+                    if self.server_handler and self.server_handler.download_certificate():
+                        Out.info("SSL certificate refreshed successfully")
+                        self.do_cert_refresh = False
+                    else:
+                        Out.error("Failed to refresh SSL certificate")
             
-            # Check free disk space
-            for _ in range(self.cache_handler.get_prune_aggression()):
-                if not self.cache_handler.recheck_free_disk_space():
-                    Out.error("Disk is full. Shutting down to prevent damage.")
-                    self.die_with_error("Out of disk space")
-                    return
-        
-        # HTTP server maintenance
-        if self.http_server:
-            self.http_server.nuke_old_connections()
+            # Cache maintenance
+            if self.cache_handler:
+                Out.debug("Performing cache maintenance...")
+                self.cache_handler.cycle_lru_cache_table()
+                
+                # Save cache state periodically (every 30 cycles ~ 15 minutes)
+                if self.thread_skip_counter % 30 == 0:
+                    Out.debug("Saving cache state...")
+                    self.cache_handler.save_cache_state()
+                
+                # Check free disk space
+                Out.debug("Checking disk space...")
+                prune_aggression = self.cache_handler.get_prune_aggression()
+                Out.debug(f"Prune aggression: {prune_aggression}")
+                for i in range(prune_aggression):
+                    Out.debug(f"Disk space check iteration {i + 1}/{prune_aggression}")
+                    if not self.cache_handler.recheck_free_disk_space():
+                        Out.error("Disk is full. Shutting down to prevent damage.")
+                        self.die_with_error("Out of disk space")
+                        return
+            
+            # HTTP server maintenance
+            if self.http_server:
+                Out.debug("Performing HTTP server maintenance...")
+                self.http_server.nuke_old_connections()
+                
+        except Exception as e:
+            Out.error(f"Error in periodic tasks: {e}")
+            raise
     
     def is_suspended(self) -> bool:
         """Check if the client is suspended."""
+        # Ensure suspended_until is a valid number
+        if self.suspended_until is None:
+            self.suspended_until = 0
         return self.suspended_until > time.time() * 1000
     
     def suspend_master_thread(self, suspend_time: int) -> bool:
@@ -209,14 +262,31 @@ class HentaiAtHomeClient:
             suspend_time_millis = suspend_time * 1000
             self.suspended_until = time.time() * 1000 + suspend_time_millis
             Out.debug(f"Master thread suspended for {suspend_time} seconds.")
+            
+            # Update stats
+            Stats.set_client_suspended(True)
+            Stats.set_program_status(f"Suspended for {suspend_time} seconds")
+            
             return self.server_handler.notify_suspend() if self.server_handler else True
         return False
     
     def resume_master_thread(self) -> bool:
         """Resume the master thread."""
         self.suspended_until = 0
-        self.thread_skip_counter = 0
-        return self.server_handler.notify_resume() if self.server_handler else True
+        Out.debug("Master thread resumed.")
+        
+        # Update stats
+        Stats.set_client_suspended(False)
+        Stats.set_program_status("Running normally")
+        
+        # Notify server and test connection
+        result = self.server_handler.notify_resume() if self.server_handler else True
+        
+        # Test server connection after resume (like Java client)
+        if self.server_handler:
+            self.server_handler.still_alive_test(True)  # resume=True
+        
+        return result
     
     def get_input_query_handler(self) -> InputQueryHandlerCLI:
         """Get the input query handler."""
@@ -242,6 +312,12 @@ class HentaiAtHomeClient:
         """Set fast shutdown flag."""
         Out.flush_logs()
         self.fast_shutdown = True
+    
+    def delete_downloader(self):
+        """Clean up gallery downloader resources."""
+        # For now, this is a placeholder method
+        # In a full implementation, this would clean up downloader resources
+        pass
     
     def shutdown(self):
         """Initiate client shutdown."""
@@ -279,6 +355,15 @@ class HentaiAtHomeClient:
             
             if self.cache_handler:
                 self.cache_handler.terminate_cache()
+            
+            # Shutdown gallery downloader
+            if self.gallery_downloader:
+                try:
+                    Out.info("Shutting down gallery downloader...")
+                    self.gallery_downloader.shutdown()
+                    Out.info("Gallery downloader shut down successfully")
+                except Exception as e:
+                    Out.warning(f"Error shutting down gallery downloader: {e}")
             
             if shutdown_error_message:
                 Out.error(shutdown_error_message)
@@ -335,3 +420,7 @@ class HentaiAtHomeClient:
     def get_http_server(self):
         """Get the HTTP server instance."""
         return self.http_server
+    
+    def get_client_api(self):
+        """Get the client API instance."""
+        return self.client_api

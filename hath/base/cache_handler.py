@@ -355,6 +355,8 @@ class CacheHandler:
     def get_cache_size_with_overhead(self) -> int:
         """Get cache size including filesystem overhead."""
         # Add 10% overhead for filesystem metadata
+        if self.cache_size is None:
+            self.cache_size = 0
         return int(self.cache_size * 1.1)
     
     def recheck_free_disk_space(self) -> bool:
