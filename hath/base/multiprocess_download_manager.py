@@ -2,10 +2,14 @@
 Multiprocess download manager implementation.
 """
 
+import hashlib
 import queue
 import time
 import threading
+from pathlib import Path
 from typing import Dict, Any, List
+
+import requests
 
 from .out import Out
 from .settings import Settings
@@ -191,11 +195,6 @@ class MultiprocessDownloadManager:
             expected_hash = file_info.get('hash', '')
             
             Out.debug(f"Worker {worker_name} downloading {file_id} from {url}")
-            
-            # Simulate download (in real implementation, use requests)
-            import requests
-            import hashlib
-            from pathlib import Path
             
             # Download file
             response = requests.get(url, timeout=30)
