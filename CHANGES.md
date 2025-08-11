@@ -1,6 +1,82 @@
 # py-hath Changes
 
-## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes)
+## [Version 1.6.4#py] - 2025-08-11 (Latest Fixes - Build 176)
+
+### Cache Management Improvements
+- **Proxy Files Now Saved to Cache**: Downloaded proxy files are now properly saved to cache directory
+  - After downloading and validating proxy files, they are saved to local cache for future requests
+  - Uses temporary file approach with `cache_handler.import_file_to_cache()` for safe storage
+  - Maintains all existing validation (size and SHA1 hash checks) before caching
+  - Eliminates repeated downloads of the same file, improving performance and reducing bandwidth
+  - **Impact**: Popular files remain available from cache after first proxy download, significantly improving response times
+
+### Proxy File Serving Improvements
+- **Reverted to In-Memory Proxy Downloads**: Simplified proxy file serving to use full in-memory downloads instead of streaming
+  - Downloads complete file into memory before serving to client
+  - Validates file size and SHA1 hash before serving
+  - Supports both full file and range requests from memory
+  - Reduces complexity and eliminates streaming-related errors
+  - **Impact**: More reliable proxy file serving with simpler error handling
+
+### Statistics System Enhancements
+- **Added Missing Java Compatibility Methods**
+  - `Stats.bytes_received()` and `Stats.bytes_sent()` methods for proxy download tracking
+  - `Stats.fileSent()`, `Stats.fileRcvd()`, `Stats.bytesSent()`, `Stats.bytesRcvd()` static methods
+  - `HTTPBandwidthMonitor.throttle_bandwidth()` method for Java compatibility
+  - **Impact**: Resolves AttributeError during proxy downloads and statistics tracking
+
+### Java Method Compatibility Improvements
+- **Added HVFile.getHVFileFromFileid Static Method**
+  - Implemented missing static method to create HVFile instances from file ID strings
+  - Added `is_valid_hv_fileid()` static method with regex validation matching Java implementation
+  - Supports both file ID formats: `hash-size-type` and `hash-size-xres-yres-type`
+  - Added Java compatibility methods: `getSize()`, `getHash()`, and `hash` property to HVFile class
+  - **Impact**: Resolves `AttributeError` when proxy file serving attempts to use `HVFile.getHVFileFromFileid`
+
+- **Added Settings Java Compatibility Methods**
+  - `Settings.getClientID()` and `getClientKey()` - Client identification methods
+  - `Settings.getMaxAllowedFileSize()` - Maximum file size limits for proxy downloads
+  - `Settings.getTempDir()` - Temporary directory path for proxy file processing
+  - `Settings.getImageProxy()` - Constructs proxy URL from host/port/type components
+  - **Impact**: Resolves proxy download initialization errors from missing Java-style method names
+
+- **Added Tools Java Compatibility Methods**
+  - `Tools.getSHA1String()` - SHA1 hash calculation (wraps existing `get_sha1_string()` method)
+  - **Impact**: Enables Hath-Request header generation for authenticated downloads
+
+### Proxy File Download System Fixes
+- **Added Cache Saving for Downloaded Files**: New `_save_downloaded_file_to_cache()` method saves proxy downloads to cache
+- **Resolved AttributeError Issues**: Fixed missing static method calls preventing proxy file serving
+- **Enhanced Authentication**: Proper Hath-Request header generation with client ID and key
+- **File Size Validation**: Proxy downloads now properly validate against maximum allowed file size
+- **Temporary File Management**: Proper temporary directory usage for downloaded files
+- **Proxy Configuration**: Support for HTTP/HTTPS proxy settings in download requests
+
+### Client Operational Stability
+- **Eliminated Java Method Compatibility Errors**: Client now runs without Java-style method AttributeErrors
+- **Proxy Download Functionality**: Proxy file serving now works correctly for files not in local cache
+- **Background Process Stability**: Gallery downloader and other background processes operate without interruption
+- **Startup Sequence**: Complete startup process works without method resolution failures
+
+### Cache System Improvements
+- **Complete Java Parity for Persistent Cache Data**
+  - **File Format**: Rewrote persistence system to exactly match Java implementation
+    - `pcache_info`: Text file with key=value format (not binary pickle)
+    - `pcache_ages`: Binary file with static range oldest timestamps  
+    - `pcache_lru`: Binary file with LRU cache table (1,048,576 shorts)
+    - **Location**: Files now stored in `data` directory instead of `tmp`
+  - **Integrity & Validation**: Added SHA1 hash validation for each binary file
+    - Hash validation prevents corruption from causing infinite loops
+    - Checksum validation ensures all required fields are loaded (bit flags: 1|2|4|8|16 = 31)
+    - Early deletion of info file prevents corruption loops
+  - **LRU Cache System**: Implemented complete Java-equivalent LRU management
+    - **Correct Size**: 1,048,576 elements matching Java `LRU_CACHE_SIZE`
+    - **Proper Cycling**: Clears 17 elements every 10 seconds for ~1 week lifespan
+    - **Pointer Management**: `lruClearPointer` tracks current position
+  - **Data Types & Structure**: 
+    - **Static Range Ages**: Dictionary matching Java `Hashtable<String,Long>`
+    - **LRU Table**: List of integers (0-65535) matching Java `short[]`
+    - **Persistence**: Proper serialization with hash validation using pickle for binary data
 
 ### Critical Bug Fixes
 - **Fixed NoneType comparison errors that prevented client startup**
@@ -46,6 +122,7 @@
 - **Root Cause**: The client was failing during the main operational loop due to multiple NoneType comparison errors
 - **Impact**: Client could successfully start up, connect to server, download certificates, and initialize all components, but would crash immediately when entering normal operation mode
 - **Resolution**: Added comprehensive null checks and proper return values throughout the codebase, particularly in session management and settings handling
+- **Cache Persistence**: Rewrote entire persistent cache system to match Java implementation exactly, ensuring data integrity and proper LRU management
 
 ---
 

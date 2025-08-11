@@ -188,3 +188,11 @@ class HTTPBandwidthMonitor:
             True if throttling is active
         """
         return self._bytes_per_tick > 0
+    
+    def throttle_bandwidth(self, byte_count: int):
+        """Throttle bandwidth by waiting for quota (Java compatibility method).
+        
+        Args:
+            byte_count: Number of bytes to throttle
+        """
+        self.wait_for_quota(byte_count)
