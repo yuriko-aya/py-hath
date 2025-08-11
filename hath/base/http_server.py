@@ -30,17 +30,41 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         try:
             self.handle_request()
+        except (ConnectionResetError, BrokenPipeError):
+            # Client disconnected - this is normal, don't log as error
+            Out.debug(f"Client {self.client_address[0]} disconnected during GET request")
+        except (ssl.SSLError, OSError) as e:
+            # SSL/network errors
+            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                Out.debug(f"SSL/network error during GET request from {self.client_address[0]}: {e}")
+            else:
+                Out.warning(f"SSL/network error handling GET request from {self.client_address[0]}: {e}")
         except Exception as e:
-            Out.error(f"Error handling request: {e}")
-            self.send_error(500, "Internal Server Error")
+            Out.error(f"Error handling GET request from {self.client_address[0]}: {e}")
+            try:
+                self.send_error(500, "Internal Server Error")
+            except:
+                pass  # Connection might already be closed
     
     def do_HEAD(self):
         """Handle HEAD requests."""
         try:
             self.handle_request()
+        except (ConnectionResetError, BrokenPipeError):
+            # Client disconnected - this is normal, don't log as error
+            Out.debug(f"Client {self.client_address[0]} disconnected during HEAD request")
+        except (ssl.SSLError, OSError) as e:
+            # SSL/network errors
+            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                Out.debug(f"SSL/network error during HEAD request from {self.client_address[0]}: {e}")
+            else:
+                Out.warning(f"SSL/network error handling HEAD request from {self.client_address[0]}: {e}")
         except Exception as e:
-            Out.error(f"Error handling HEAD request: {e}")
-            self.send_error(500, "Internal Server Error")
+            Out.error(f"Error handling HEAD request from {self.client_address[0]}: {e}")
+            try:
+                self.send_error(500, "Internal Server Error")
+            except:
+                pass  # Connection might already be closed
     
     def handle_request(self):
         """Handle HTTP request."""
@@ -224,18 +248,39 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             
             # Send file content (only for GET, not HEAD)
             if self.command == 'GET':
-                with open(file_path, 'rb') as f:
-                    while True:
-                        data = f.read(8192)
-                        if not data:
-                            break
-                        self.wfile.write(data)
+                try:
+                    with open(file_path, 'rb') as f:
+                        while True:
+                            data = f.read(8192)
+                            if not data:
+                                break
+                            self.wfile.write(data)
+                except (ConnectionResetError, BrokenPipeError):
+                    # Client disconnected - this is normal, don't log as error
+                    Out.debug(f"Client disconnected during file transfer for {hv_file.file_id}")
+                    return
+                except (ssl.SSLError, OSError) as e:
+                    # SSL/network errors during file transfer - often due to client disconnect
+                    if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                        Out.debug(f"SSL/network error during file transfer (client likely disconnected): {e}")
+                    else:
+                        Out.warning(f"SSL/network error serving file {hv_file.file_id}: {e}")
+                    return
             
             # Mark as recently accessed
             cache_handler = Settings.get_active_client().get_cache_handler()
             if cache_handler:
                 cache_handler.mark_recently_accessed(hv_file)
             
+        except (ConnectionResetError, BrokenPipeError):
+            # Client disconnected before we could send headers
+            Out.debug(f"Client disconnected before serving cached file {hv_file.file_id}")
+        except (ssl.SSLError, OSError) as e:
+            # SSL/network errors
+            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                Out.debug(f"SSL/network error serving cached file (client likely disconnected): {e}")
+            else:
+                Out.warning(f"SSL/network error serving cached file: {e}")
         except Exception as e:
             Out.error(f"Error serving file from cache: {e}")
             self.send_error(500, "Internal Server Error")
@@ -305,7 +350,19 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             
             # Send file content (only for GET, not HEAD)
             if self.command == 'GET':
-                self.wfile.write(file_data)
+                try:
+                    self.wfile.write(file_data)
+                except (ConnectionResetError, BrokenPipeError):
+                    # Client disconnected - this is normal, don't log as error
+                    Out.debug(f"Client disconnected during proxy file transfer for {file_id}")
+                    return
+                except (ssl.SSLError, OSError) as e:
+                    # SSL/network errors during file transfer - often due to client disconnect
+                    if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                        Out.debug(f"SSL/network error during proxy file transfer (client likely disconnected): {e}")
+                    else:
+                        Out.warning(f"SSL/network error serving proxy file {file_id}: {e}")
+                    return
             
             # Cache the file for future requests
             cache_handler = client.get_cache_handler()
@@ -352,9 +409,25 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             
             Out.debug(f"Successfully served file {file_id} via proxy")
             
+        except (ConnectionResetError, BrokenPipeError):
+            # Client disconnected before we could serve the file
+            Out.debug(f"Client disconnected before serving proxy file {file_id}")
+        except (ssl.SSLError, OSError) as e:
+            # SSL/network errors
+            if "EOF occurred in violation of protocol" in str(e) or "Connection reset by peer" in str(e):
+                Out.debug(f"SSL/network error serving proxy file (client likely disconnected): {e}")
+            else:
+                Out.warning(f"SSL/network error serving proxy file: {e}")
+                try:
+                    self.send_error(500, "Internal Server Error")
+                except:
+                    pass  # Connection might already be closed
         except Exception as e:
             Out.error(f"Error serving file via proxy: {e}")
-            self.send_error(500, "Internal Server Error")
+            try:
+                self.send_error(500, "Internal Server Error")
+            except:
+                pass  # Connection might already be closed
     
     def handle_speedtest_request(self, urlparts: List[str]):
         """Handle speed test request."""
