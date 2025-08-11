@@ -61,8 +61,7 @@ class SharedResources:
         # Process status tracking
         self.process_stats.update({
             'main_process': {'status': 'starting', 'last_heartbeat': time.time()},
-            'http_process': {'status': 'not_started', 'last_heartbeat': 0},
-            'download_process': {'status': 'not_started', 'last_heartbeat': 0}
+            'http_process': {'status': 'not_started', 'last_heartbeat': 0}
         })
 
 
@@ -234,6 +233,9 @@ class MultiprocessHentaiAtHomeClient:
         Stats.reset_stats()
         Stats.set_program_status("Initializing multiprocess client...")
         
+        # Initialize download manager attribute
+        self.download_manager = None
+        
         try:
             self._initialize_components()
             self._start_processes()
@@ -313,10 +315,10 @@ class MultiprocessHentaiAtHomeClient:
             Out.warning(f"Error processing stat update: {e}")
     
     def _start_processes(self):
-        """Start all worker processes."""
-        Out.info("Starting worker processes...")
+        """Start worker processes."""
+        Out.info("Starting HTTP server process...")
         
-        # Start HTTP server process
+        # Start only HTTP server process
         if not self.process_manager.start_process(
             'http_server',
             http_server_process_main,
@@ -325,36 +327,40 @@ class MultiprocessHentaiAtHomeClient:
             self.die_with_error("Failed to start HTTP server process")
             return
         
-        # Start download manager process
-        if not self.process_manager.start_process(
-            'download_manager',
-            download_manager_process_main,
-            (self.shared,)
-        ):
-            self.die_with_error("Failed to start download manager process")
-            return
+        # Download manager runs in main process - initialize it here
+        self._initialize_download_manager()
         
-        # Wait for processes to be ready
+        # Wait for HTTP server process to be ready
         self._wait_for_processes_ready()
         
-        Out.info("All worker processes started successfully")
+        Out.info("HTTP server process started successfully")
+    
+    def _initialize_download_manager(self):
+        """Initialize download manager in main process."""
+        try:
+            from .download_manager import DownloadManager
+            self.download_manager = DownloadManager(self)
+            Out.info("Download manager initialized in main process")
+        except Exception as e:
+            Out.warning(f"Failed to initialize download manager: {e}")
+            self.download_manager = None
     
     def _wait_for_processes_ready(self, timeout: int = 30):
-        """Wait for all processes to report ready."""
+        """Wait for HTTP server process to report ready."""
         start_time = time.time()
-        required_processes = {'http_server', 'download_manager'}
+        required_processes = {'http_server'}  # Only HTTP server now
         
         while time.time() - start_time < timeout:
             ready_processes = set(self.shared.processes_ready.keys())
             if required_processes.issubset(ready_processes):
-                Out.info("All processes are ready")
+                Out.info("HTTP server process is ready")
                 return
             
             missing = required_processes - ready_processes
             Out.debug(f"Waiting for processes: {missing}")
             time.sleep(1)
         
-        self.die_with_error("Timeout waiting for processes to be ready")
+        self.die_with_error("Timeout waiting for HTTP server process to be ready")
     
     def _main_loop(self):
         """Main process control loop."""
@@ -380,6 +386,9 @@ class MultiprocessHentaiAtHomeClient:
                     self._perform_maintenance()
                     last_maintenance = current_time
                 
+                # Process download requests in main process
+                self._process_downloads()
+                
                 # Process commands from worker processes
                 self._process_commands()
                 
@@ -401,6 +410,11 @@ class MultiprocessHentaiAtHomeClient:
             if self.server_handler:
                 self.server_handler.still_alive_test(False)
             
+            # Download manager maintenance
+            if self.download_manager:
+                # Perform any download manager maintenance here
+                pass
+            
             # Send heartbeat
             self.shared.stats_queue.put({
                 'type': 'heartbeat',
@@ -410,6 +424,44 @@ class MultiprocessHentaiAtHomeClient:
             
         except Exception as e:
             Out.warning(f"Error in maintenance: {e}")
+    
+    def _process_downloads(self):
+        """Process download requests from the download queue."""
+        if not self.download_manager:
+            return
+        
+        try:
+            # Process download requests from queue
+            while not self.shared.download_queue.empty():
+                try:
+                    download_request = self.shared.download_queue.get_nowait()
+                    self._handle_download_request(download_request)
+                except queue.Empty:
+                    break
+        except Exception as e:
+            Out.warning(f"Error processing downloads: {e}")
+    
+    def _handle_download_request(self, request: Dict[str, Any]):
+        """Handle a download request in the main process."""
+        try:
+            # Extract download parameters
+            file_id = request.get('file_id')
+            sources = request.get('sources', [])
+            
+            if file_id and sources and self.download_manager:
+                # Process download using the download manager
+                success = self.download_manager.download_file(file_id, sources)
+                
+                # Update stats
+                if success:
+                    self.shared.stats_queue.put({
+                        'type': 'file_received',
+                        'file_id': file_id,
+                        'bytes': request.get('file_size', 0)
+                    })
+                
+        except Exception as e:
+            Out.warning(f"Error handling download request: {e}")
     
     def _process_commands(self):
         """Process commands from worker processes."""
@@ -491,6 +543,10 @@ class MultiprocessHentaiAtHomeClient:
         """Get the cache handler instance (shared resource)."""
         return None  # Cache is managed by shared resources
     
+    def get_download_manager(self):
+        """Get the download manager instance."""
+        return self.download_manager
+    
     def get_http_server(self):
         """Get the HTTP server instance (runs in separate process)."""
         return None  # HTTP server runs in separate process
@@ -528,33 +584,3 @@ def http_server_process_main(shared_resources: SharedResources):
         })
     finally:
         Out.info("HTTP server process exiting")
-
-
-def download_manager_process_main(shared_resources: SharedResources):
-    """Main function for download manager process."""
-    try:
-        # Set up logging for this process
-        Out.setup_process_logging("download_manager")
-        Out.info("Download manager process starting...")
-        
-        # Import in process to avoid import issues
-        from .multiprocess_download_manager import MultiprocessDownloadManager
-        
-        # Create download manager
-        manager = MultiprocessDownloadManager(shared_resources)
-        
-        # Signal that process is ready
-        shared_resources.processes_ready['download_manager'] = True
-        
-        # Start download manager
-        manager.run()
-        
-    except Exception as e:
-        Out.error(f"Download manager process error: {e}")
-        shared_resources.command_queue.put({
-            'type': 'shutdown_request',
-            'process': 'download_manager',
-            'error': str(e)
-        })
-    finally:
-        Out.info("Download manager process exiting")

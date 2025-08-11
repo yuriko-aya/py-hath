@@ -8,16 +8,17 @@ The py-hath client now supports multiprocess mode for enhanced performance and r
 
 ### Process Structure
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Main Process  │    │  HTTP Process   │    │Download Process │
-│                 │    │                 │    │                 │
-│ • Client Control│◄──►│ • File Serving  │    │ • Gallery DL    │
-│ • Settings Mgmt │    │ • Range Requests│    │ • Proxy DL      │
-│ • Stats Collect │    │ • Session Mgmt  │    │ • File Validation│
-│ • RPC Handling  │    │ • Bandwidth     │    │ • Cache Import  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────── Shared Memory & Queues ──────────┘
+┌─────────────────┐    ┌─────────────────┐
+│   Main Process  │    │  HTTP Process   │
+│                 │    │                 │
+│ • Client Control│◄──►│ • File Serving  │
+│ • Settings Mgmt │    │ • Range Requests│
+│ • Stats Collect │    │ • Session Mgmt  │
+│ • RPC Handling  │    │ • Bandwidth     │
+│ • Download Mgmt │    │                 │
+└─────────────────┘    └─────────────────┘
+         │                       │
+         └─── Shared Memory & Queues ───┘
 ```
 
 ### Components
@@ -28,19 +29,13 @@ The py-hath client now supports multiprocess mode for enhanced performance and r
 - **Statistics Collection**: Aggregates stats from all processes
 - **RPC Handling**: Server commands and status reporting
 - **Process Monitoring**: Health checks and restart management
+- **Download Management**: Handles gallery downloads and file fetching
 
-#### HTTP Server Process
-- **File Serving**: Handles HTTP requests for cached files
-- **Range Requests**: Supports partial content delivery
-- **Session Management**: Tracks client connections
-- **Bandwidth Throttling**: Enforces bandwidth limits
-- **Proxy Downloads**: Downloads files not in cache
-
-#### Download Manager Process
-- **Gallery Downloads**: Bulk gallery file downloads
-- **Proxy Downloads**: Individual file downloads for HTTP server
-- **File Validation**: SHA1 and size verification
-- **Cache Integration**: Saves downloaded files to cache
+#### HTTP Process
+- **File Serving**: Serves cached files to clients with HTTPS
+- **Range Requests**: Supports partial content (HTTP 206)
+- **Session Management**: Tracks client connections and bandwidth
+- **Content Delivery**: Optimized file streaming with throttling
 
 ### Shared Resources
 
@@ -58,16 +53,16 @@ The py-hath client now supports multiprocess mode for enhanced performance and r
 ## Benefits
 
 ### Performance Benefits
-- ✅ **True Parallelism**: Bypasses Python GIL limitations
-- ✅ **CPU Utilization**: Full multi-core usage for file processing
-- ✅ **I/O Concurrency**: HTTP serving while downloading files
-- ✅ **Scalability**: Handle more concurrent connections
-- ✅ **Memory Efficiency**: Better memory usage patterns
+- ✅ **HTTP Parallelism**: Multiple concurrent request handling
+- ✅ **Process Isolation**: HTTP server crashes don't affect main client
+- ✅ **Better Resource Usage**: Separate processes for I/O vs computation
+- ✅ **Scalability**: Handle more concurrent file serving requests
+- ✅ **GIL Bypass**: HTTP serving benefits from true parallelism
 
 ### Reliability Benefits
-- ✅ **Fault Isolation**: HTTP server crash won't affect downloads
-- ✅ **Process Recovery**: Automatic restart of failed processes
-- ✅ **Resource Management**: Better control over memory and CPU usage
+- ✅ **Fault Isolation**: HTTP server crash won't affect main client functions
+- ✅ **Process Recovery**: Automatic restart of failed HTTP server
+- ✅ **Resource Management**: Better control over HTTP serving resources
 
 ### Security Features
 - ✅ **Full SSL/TLS Support**: HTTPS server with automatic certificate management
