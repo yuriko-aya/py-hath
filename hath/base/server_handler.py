@@ -25,6 +25,8 @@ class ServerHandler:
     ACT_DOWNLOAD_CERT = "server_stat"
     ACT_SERVER_STAT = "server_stat"
     ACT_CLIENT_LOGIN = "client_login"
+    ACT_CLIENT_SETTINGS = "client_settings"
+    ACT_GET_CERTIFICATE = "get_cert"
     ACT_CLIENT_SUSPEND = "client_suspend"
     ACT_CLIENT_RESUME = "client_resume"
     ACT_CLIENT_STOP = "client_stop"
@@ -53,7 +55,7 @@ class ServerHandler:
             Out.info("Reading Hentai@Home client settings from server...")
             response = self._get_server_response(self.ACT_CLIENT_LOGIN)
             
-            if response and response.get('success'):
+            if response and response.get('status') == 'OK':
                 self.login_validated = True
                 ServerHandler._global_login_validated = True
                 Out.info("Applying settings...")
