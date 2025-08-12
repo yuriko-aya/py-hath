@@ -141,6 +141,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
         
         # Handle root path case - when there's only "/" path
         if len(urlparts) == 2 and urlparts[1] == "":
+            Out.info(f"HTTP {self.command} request: Status page from {self.client_address[0]}")
             self.send_status_page()
             return
         
@@ -154,6 +155,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             if len(urlparts) < 4:
                 self.send_error(400, "Bad Request")
                 return
+            Out.info(f"HTTP {self.command} request: File request /h/{urlparts[2]} from {self.client_address[0]}")
             Out.debug("Handling file request")
             self.handle_file_request(urlparts)
             return
@@ -165,6 +167,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 Out.debug("Got a malformed servercmd")
                 self.send_error(403, "Malformed servercmd")
                 return
+            Out.info(f"HTTP {self.command} request: Server command /{request_type}/{urlparts[2]} from {self.client_address[0]}")
             Out.debug("Handling server command")
             self.handle_server_command(urlparts)
             return
@@ -175,6 +178,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             if len(urlparts) < 5:
                 self.send_error(400, "Bad Request")
                 return
+            Out.info(f"HTTP {self.command} request: Speed test /t/{urlparts[2]} from {self.client_address[0]}")
             Out.debug("Handling speed test")
             self.handle_speedtest_request(urlparts)
             return
@@ -183,12 +187,14 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             # Java: else if(urlparts.length == 2)
             if request_type == 'favicon.ico':
                 # Java: Redirect to the main website icon
+                Out.info(f"HTTP {self.command} request: Favicon redirect from {self.client_address[0]}")
                 self.send_response(301)  # Moved Permanently
                 self.send_header('Location', 'https://e-hentai.org/favicon.ico')
                 self.end_headers()
                 return
             elif request_type == 'robots.txt':
                 # Java: Bots are not welcome
+                Out.info(f"HTTP {self.command} request: Robots.txt from {self.client_address[0]}")
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
@@ -196,6 +202,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 return
         
         # Default case - Java: Out.debug(session + " Invalid request type '" + urlparts[1]);
+        Out.info(f"HTTP {self.command} request: Invalid request type '{request_type}' from {self.client_address[0]}")
         Out.debug(f"Invalid request type '{request_type}'")
         self.send_error(404, "Not Found")
     
@@ -572,11 +579,8 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             # Update stats
             Stats.get_instance().add_bytes_sent(len(data))
             
-        # Mark as successfully sent and recently accessed
+        # Mark as successfully sent
         Stats.get_instance().increment_files_sent()
-        cache_handler = Settings.get_active_client().get_cache_handler()
-        if cache_handler:
-            cache_handler.mark_recently_accessed(hv_file)
     
     def serve_file_via_proxy(self, fileindex: str, xres: str, file_id: str):
         """Serve a file by downloading it fully into memory first."""
@@ -983,6 +987,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             # Process the command (based on Java processRemoteAPICommand)
             if command == 'still_alive':
                 # Java: return new HTTPResponseProcessorText("I feel FANTASTIC and I'm still alive");
+                Out.info(f"Server command: still_alive from {self.client_address[0]}")
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
@@ -997,6 +1002,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 testsize_str = add_table.get('testsize')
                 testsize = int(testsize_str) if testsize_str else 1000000
                 
+                Out.info(f"Server command: speed_test (testsize={testsize}) from {self.client_address[0]}")
                 Out.debug(f"Sending servercmd speedtest with testsize={testsize}")
                 
                 # Send speed test data (matching HTTPResponseProcessorSpeedtest)
@@ -1031,6 +1037,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             elif command == 'refresh_settings':
                 # Java: client.getServerHandler().refreshServerSettings();
                 # Java: return new HTTPResponseProcessorText("");
+                Out.info(f"Server command: refresh_settings from {self.client_address[0]}")
                 client = Settings.get_active_client()
                 if client:
                     server_handler = client.get_server_handler()
@@ -1050,6 +1057,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             elif command == 'threaded_proxy_test':
                 # Java: return processThreadedProxyTest(addTable);
                 # Implement a basic proxy connectivity test
+                Out.info(f"Server command: threaded_proxy_test from {self.client_address[0]}")
                 successful_tests = 0
                 total_time_millis = 0
                 
@@ -1102,6 +1110,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             elif command == 'start_downloader':
                 # Java: client.startDownloader();
                 # Java: return new HTTPResponseProcessorText("");
+                Out.info(f"Server command: start_downloader from {self.client_address[0]}")
                 client = Settings.get_active_client()
                 if client:
                     try:
@@ -1109,7 +1118,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                         if not hasattr(client, 'gallery_downloader') or client.gallery_downloader is None:
                             if Settings.get_bool('enable_gallery_downloader', True):
                                 Out.info("Starting gallery downloader via server command...")
-                                from ..gallery_downloader import GalleryDownloader
+                                from .gallery_downloader import GalleryDownloader
                                 client.gallery_downloader = GalleryDownloader(client)
                                 Out.info("Gallery downloader started successfully")
                             else:
@@ -1128,6 +1137,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             elif command == 'refresh_certs':
                 # Java: client.setCertRefresh();
                 # Java: return new HTTPResponseProcessorText("");
+                Out.info(f"Server command: refresh_certs from {self.client_address[0]}")
                 client = Settings.get_active_client()
                 if client:
                     try:
@@ -1157,6 +1167,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
             elif command == 'stop_downloader':
                 # Stop gallery downloader
+                Out.info(f"Server command: stop_downloader from {self.client_address[0]}")
                 client = Settings.get_active_client()
                 if client:
                     try:
@@ -1178,6 +1189,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
             elif command == 'status':
                 # Return client status information
+                Out.info(f"Server command: status from {self.client_address[0]}")
                 client = Settings.get_active_client()
                 status_info = []
                 
@@ -1223,6 +1235,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
             else:
                 # Java: return new HTTPResponseProcessorText("INVALID_COMMAND");
+                Out.info(f"Server command: UNKNOWN '{command}' from {self.client_address[0]}")
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
