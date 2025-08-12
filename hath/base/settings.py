@@ -38,6 +38,9 @@ class Settings:
     _image_proxy_host = None
     _static_ranges: Dict[str, int] = {}
     
+    # Server time synchronization
+    _server_time_delta = 0
+    
     # Directory paths
     _data_dir: Optional[Path] = None
     _log_dir: Optional[Path] = None
@@ -98,6 +101,10 @@ class Settings:
     @classmethod
     def login_credentials_are_syntax_valid(cls) -> bool:
         """Check if login credentials have valid syntax."""
+        if cls._client_id is None:
+            cls._client_id = 0
+        if cls._client_key is None:
+            cls._client_key = ""
         pattern = f"^[a-zA-Z0-9]{{{cls.CLIENT_KEY_LENGTH}}}$"
         return cls._client_id > 0 and re.match(pattern, cls._client_key) is not None
     
@@ -210,13 +217,43 @@ class Settings:
         return cls._client_id
     
     @classmethod
+    def getClientID(cls) -> int:
+        """Get the client ID (Java compatibility method)."""
+        return cls._client_id
+    
+    @classmethod
     def get_client_key(cls) -> str:
         """Get the client key."""
         return cls._client_key
     
     @classmethod
+    def getClientKey(cls) -> str:
+        """Get the client key (Java compatibility method)."""
+        return cls._client_key
+    
+    @classmethod
+    def getMaxAllowedFileSize(cls) -> int:
+        """Get the maximum allowed file size (Java compatibility method)."""
+        return cls.get_max_allowed_file_size()
+    
+    @classmethod
+    def getTempDir(cls) -> Path:
+        """Get the temp directory (Java compatibility method)."""
+        return cls.get_temp_dir()
+    
+    @classmethod
+    def getImageProxy(cls) -> Optional[str]:
+        """Get the image proxy URL (Java compatibility method)."""
+        if cls._image_proxy_host and cls._image_proxy_port:
+            proxy_type = cls._image_proxy_type or "http"
+            return f"{proxy_type}://{cls._image_proxy_host}:{cls._image_proxy_port}"
+        return None
+    
+    @classmethod
     def get_client_port(cls) -> int:
         """Get the client port."""
+        if cls._client_port is None:
+            cls._client_port = 0
         return cls._client_port if cls._client_port > 0 else 0
     
     @classmethod
@@ -266,6 +303,8 @@ class Settings:
     @classmethod
     def get_disk_limit_bytes(cls) -> int:
         """Get the disk limit in bytes."""
+        if cls._disk_limit_bytes is None:
+            cls._disk_limit_bytes = 0
         return cls._disk_limit_bytes
     
     @classmethod
@@ -277,6 +316,76 @@ class Settings:
     def get_max_allowed_file_size(cls) -> int:
         """Get the maximum allowed file size."""
         return cls._max_allowed_file_size
+    
+    @classmethod
+    def get_throttle_bytes_per_sec(cls) -> int:
+        """Get the bandwidth throttle in bytes per second."""
+        return cls._throttle_bytes
+    
+    @classmethod
+    def set_throttle_bytes_per_sec(cls, bytes_per_sec: int):
+        """Set the bandwidth throttle in bytes per second."""
+        cls._throttle_bytes = bytes_per_sec
+    
+    @classmethod
+    def is_disable_bwm(cls) -> bool:
+        """Check if bandwidth monitoring is disabled."""
+        return cls._disable_bwm
+    
+    @classmethod
+    def is_disable_download_bwm(cls) -> bool:
+        """Check if download bandwidth monitoring is disabled."""
+        return cls._disable_download_bwm
+    
+    @classmethod
+    def get_image_proxy_host(cls) -> Optional[str]:
+        """Get the image proxy host."""
+        return cls._image_proxy_host
+    
+    @classmethod
+    def get_image_proxy_port(cls) -> int:
+        """Get the image proxy port."""
+        return cls._image_proxy_port
+    
+    @classmethod
+    def get_image_proxy_type(cls) -> Optional[str]:
+        """Get the image proxy type."""
+        return cls._image_proxy_type
+    
+    @classmethod
+    def get_rpc_server_host(cls) -> Optional[str]:
+        """Get the current RPC server host."""
+        # For now, return the default RPC host
+        # In a full implementation, this would manage a pool of RPC servers
+        return cls.CLIENT_RPC_HOST
+    
+    @classmethod
+    def mark_rpc_server_failure(cls, fail_host: str):
+        """
+        Mark an RPC server as failed.
+        
+        Args:
+            fail_host: The hostname that failed
+        """
+        # Store the last failed server
+        cls._rpc_server_last_failed = fail_host
+        
+        # In a full implementation, this would:
+        # - Remove the server from the active pool temporarily
+        # - Try alternative RPC servers if available
+        # - Implement exponential backoff before retrying
+        from .out import Out
+        Out.debug(f"Settings: Marked RPC server {fail_host} as failed")
+    
+    @classmethod
+    def get_server_time_delta(cls) -> int:
+        """Get the server time delta in seconds."""
+        return cls._server_time_delta
+    
+    @classmethod
+    def set_server_time_delta(cls, delta: int):
+        """Set the server time delta in seconds."""
+        cls._server_time_delta = delta
     
     @classmethod
     def prompt_for_id_and_key(cls, input_handler):
@@ -300,3 +409,53 @@ class Settings:
                 print("Invalid Client ID. Please enter a number.")
             except Exception as e:
                 print(f"Error: {e}")
+    
+    # Configuration utility methods
+    @classmethod
+    def get_bool(cls, key: str, default: bool = False) -> bool:
+        """Get a boolean configuration value."""
+        # This is a simplified implementation - in a real system, 
+        # this would read from a configuration file or database
+        config_map = {
+            'validate_files_on_serve': True,  # Enable file validation by default
+            'enable_bandwidth_throttling': True,
+            'enable_session_management': True,
+            'flush_logs': cls._flush_logs,
+            'disable_logs': cls._disable_logs,
+            'skip_free_space_check': False,
+            'disable_download_bwm': cls._disable_download_bwm,
+            'enable_gallery_downloader': True,
+            'debug_mode': cls._debug_mode,
+        }
+        return config_map.get(key, default)
+    
+    @classmethod
+    def get_int(cls, key: str, default: int = 0) -> int:
+        """Get an integer configuration value."""
+        config_map = {
+            'disk_min_remaining_bytes': 1073741824,  # 1GB default
+            'max_filename_length': 125,
+            'rpc_server_port': cls._rpc_server_port
+        }
+        return config_map.get(key, default)
+        """Get an integer configuration value."""
+        # This is a simplified implementation - in a real system,
+        # this would read from a configuration file or database
+        config_map = {
+            'max_connections': 100,
+            'max_connections_per_ip': 10,
+            'throttle_kbps': 0,  # 0 means no throttling
+            'session_timeout': 300,  # 5 minutes
+            'bandwidth_window_size': 20,  # 20 ticks window
+            'validation_frequency_hours': 168,  # Validate once per week
+        }
+        return config_map.get(key, default)
+    
+    @classmethod
+    def get_string(cls, key: str, default: str = "") -> str:
+        """Get a string configuration value."""
+        config_map = {
+            'proxy_host': cls._image_proxy_host or "",
+            'proxy_type': cls._image_proxy_type or "",
+        }
+        return config_map.get(key, default)

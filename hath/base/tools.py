@@ -21,6 +21,11 @@ class Tools:
         return hashlib.sha1(data).hexdigest()
     
     @staticmethod
+    def getSHA1String(data: Union[str, bytes]) -> str:
+        """Calculate SHA1 hash of string or bytes (Java compatibility method)."""
+        return Tools.get_sha1_string(data)
+    
+    @staticmethod
     def parse_additional(additional: str) -> dict:
         """Parse additional parameter string into key-value dictionary.
         
@@ -158,9 +163,20 @@ class Tools:
         try:
             # Ensure destination directory exists
             dst.parent.mkdir(parents=True, exist_ok=True)
-            src.rename(dst)
-            return True
-        except Exception:
+            
+            # Try rename first (fastest)
+            try:
+                src.rename(dst)
+                return True
+            except OSError:
+                # If rename fails (cross-filesystem), try copy + delete
+                import shutil
+                shutil.copy2(src, dst)
+                src.unlink()
+                return True
+                
+        except Exception as e:
+            Out.debug(f"Failed to move file {src} to {dst}: {e}")
             return False
     
     @staticmethod
