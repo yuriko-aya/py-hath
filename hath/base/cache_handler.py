@@ -558,9 +558,64 @@ class CacheHandler:
             Out.debug(f"CacheHandler: Failed to save cache state: {e}")
     
     def process_blacklist(self, deltatime: int):
-        """Process blacklisted files (placeholder)."""
-        # This would implement blacklist processing in a real implementation
-        pass
+        """Process blacklisted files by removing them from cache.
+        
+        Args:
+            deltatime: Time elapsed since last processing (in milliseconds)
+        """
+        # In a full implementation, this would:
+        # 1. Check for files that have been marked as blacklisted by the server
+        # 2. Remove them from the local cache
+        # 3. Update internal cache tracking structures
+        
+        # For now, implement basic cleanup of invalid files
+        try:
+            removed_count = 0
+            removed_size = 0
+            
+            # Process cache directories to find invalid files
+            for cache_dir in Tools.list_sorted_dirs(self.cache_dir):
+                if not Settings.is_static_range(cache_dir.name):
+                    # Remove directories for inactive static ranges
+                    try:
+                        import shutil
+                        shutil.rmtree(cache_dir)
+                        Out.debug(f"CacheHandler: Removed directory for inactive static range: {cache_dir.name}")
+                    except Exception as e:
+                        Out.warning(f"CacheHandler: Failed to remove inactive range directory {cache_dir}: {e}")
+                    continue
+                
+                # Check files in valid static range directories
+                for file_path in Tools.list_sorted_files(cache_dir):
+                    if not file_path.is_file():
+                        continue
+                    
+                    # Get HVFile for validation
+                    hv_file = self._get_hv_file_from_file(file_path)
+                    
+                    # Remove invalid files (this acts as a basic blacklist cleanup)
+                    if hv_file is None or not hv_file.is_valid():
+                        try:
+                            file_size = Tools.get_file_size(file_path)
+                            Tools.safe_delete_file(file_path)
+                            
+                            with self.lock:
+                                self.cache_count -= 1
+                                self.cache_size -= file_size
+                            
+                            removed_count += 1
+                            removed_size += file_size
+                            
+                            Out.debug(f"CacheHandler: Removed invalid/blacklisted file: {file_path.name}")
+                            
+                        except Exception as e:
+                            Out.warning(f"CacheHandler: Failed to remove invalid file {file_path}: {e}")
+            
+            if removed_count > 0:
+                Out.info(f"CacheHandler: Blacklist processing removed {removed_count} files ({Tools.format_bytes(removed_size)})")
+                
+        except Exception as e:
+            Out.error(f"CacheHandler: Error during blacklist processing: {e}")
     
     def is_file_verification_on_cooldown(self) -> bool:
         """Check if file verification is on cooldown."""

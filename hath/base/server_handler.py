@@ -14,19 +14,20 @@ from .tools import Tools
 
 
 class ServerHandler:
-    """Handles communication with Hentai@Home servers."""
+    """Handles communication with the Hentai@Home server."""
     
-    # Action constants
-    ACT_SERVER_STAT = "server_stat"
-    ACT_GET_BLACKLIST = "get_blacklist"
-    ACT_GET_CERTIFICATE = "get_cert"
-    ACT_CLIENT_LOGIN = "client_login"
-    ACT_CLIENT_SETTINGS = "client_settings"
+    # Class variable to track global login validation state
+    _global_login_validated = False
+    
+    # Action types for server communication
     ACT_CLIENT_START = "client_start"
+    ACT_STILL_ALIVE = "still_alive"
+    ACT_DOWNLOAD_CERT = "server_stat"
+    ACT_SERVER_STAT = "server_stat"
+    ACT_CLIENT_LOGIN = "client_login"
     ACT_CLIENT_SUSPEND = "client_suspend"
     ACT_CLIENT_RESUME = "client_resume"
     ACT_CLIENT_STOP = "client_stop"
-    ACT_STILL_ALIVE = "still_alive"
     ACT_STATIC_RANGE_FETCH = "srfetch"
     ACT_DOWNLOADER_FETCH = "dlfetch"
     ACT_DOWNLOADER_FAILREPORT = "dlfails"
@@ -52,8 +53,9 @@ class ServerHandler:
             Out.info("Reading Hentai@Home client settings from server...")
             response = self._get_server_response(self.ACT_CLIENT_LOGIN)
             
-            if response and response.get('status') == 'OK':
+            if response and response.get('success'):
                 self.login_validated = True
+                ServerHandler._global_login_validated = True
                 Out.info("Applying settings...")
                 self._parse_and_update_settings(response.get('response_text', ''))
                 Out.info("Finished applying settings")
@@ -546,8 +548,7 @@ class ServerHandler:
     @staticmethod
     def is_login_validated() -> bool:
         """Check if login has been validated."""
-        # This would be implemented with a global state
-        return True  # Placeholder
+        return ServerHandler._global_login_validated
     
     def get_downloader_fetch_url(self, gid: int, page: int, fileindex: int, xres: str, retry: int) -> Optional[str]:
         """Get download URL for a gallery file.
