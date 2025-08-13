@@ -21,6 +21,7 @@ from .settings import Settings
 from .stats import Stats
 from .tools import Tools
 from .http_bandwidth_monitor import HTTPBandwidthMonitor
+from .cache_handler import HVFile
 
 
 class ProxyFileDownloader:
@@ -384,7 +385,6 @@ class ProxyFileDownloader:
                     client = Settings.get_active_client()
                     if client and client.get_cache_handler():
                         # Create HVFile for import
-                        from .cache_handler import HVFile
                         hv_file = HVFile.getHVFileFromFileid(self.file_id)
                         
                         if hv_file and client.get_cache_handler().import_file_to_cache(self.temp_file_path, hv_file):

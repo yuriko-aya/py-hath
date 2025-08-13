@@ -6,8 +6,11 @@ Contains all configuration constants and settings management.
 import os
 import re
 import socket
+import time
 from pathlib import Path
 from typing import Optional, Dict, List
+
+from .out import Out
 
 
 class Settings:
@@ -262,19 +265,8 @@ class Settings:
         cls._client_port = port
     
     @classmethod
-    def get_server_time_delta(cls) -> int:
-        """Get the server time delta."""
-        return cls._server_time_delta
-    
-    @classmethod
-    def set_server_time_delta(cls, delta: int):
-        """Set the server time delta."""
-        cls._server_time_delta = delta
-    
-    @classmethod
     def get_server_time(cls) -> int:
         """Get the current server time."""
-        import time
         return int(time.time()) + cls._server_time_delta
     
     @classmethod
@@ -283,7 +275,8 @@ class Settings:
         if not file_id or len(file_id) < 2:
             return False
         static_range = file_id[:2]
-        return static_range in cls._static_ranges
+        # Check if any 4-character static range key starts with our 2-character range
+        return any(key.startswith(static_range) for key in cls._static_ranges.keys())
     
     @classmethod
     def get_static_range_count(cls) -> int:
@@ -374,7 +367,6 @@ class Settings:
         # - Remove the server from the active pool temporarily
         # - Try alternative RPC servers if available
         # - Implement exponential backoff before retrying
-        from .out import Out
         Out.debug(f"Settings: Marked RPC server {fail_host} as failed")
     
     @classmethod

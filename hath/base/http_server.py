@@ -3,18 +3,25 @@ HTTP server for serving cached files and handling requests.
 """
 
 import email.utils
+import hashlib
+import os
 import random
+import requests
 import ssl
 import socket
 import tempfile
 import threading
 import time
+import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from http.server import HTTPServer as BaseHTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from typing import Dict, List, Optional
 from urllib.parse import urlparse, parse_qs
+from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.hazmat.primitives import serialization
 
 from .out import Out
 from .settings import Settings
@@ -22,6 +29,9 @@ from .http_session import HTTPSession, HTTPSessionManager
 from .http_bandwidth_monitor import HTTPBandwidthMonitor
 from .file_validator import FileValidator
 from .stats import Stats
+from .tools import Tools
+from .cache_handler import HVFile
+from .gallery_downloader import GalleryDownloader
 
 
 class HTTPRequestHandler(BaseHTTPRequestHandler):
@@ -215,7 +225,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             additional_str = urlparts[3]
             
             # Java: Hashtable<String,String> additional = Tools.parseAdditional(urlparts[3]);
-            from .tools import Tools
             additional = Tools.parse_additional(additional_str)
             
             # Java: boolean keystampRejected = true;
@@ -601,7 +610,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 return
             
             # Get file info for validation
-            from .cache_handler import HVFile
             hv_file = HVFile.getHVFileFromFileid(file_id)
             
             if not hv_file:
@@ -639,8 +647,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
     
     def _download_file_to_memory(self, sources: list, file_id: str, hv_file) -> bytes:
         """Download file completely into memory from source URLs."""
-        import requests
-        from .tools import Tools
         
         for source_url in sources:
             try:
@@ -678,7 +684,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                     continue
                 
                 # Validate file hash
-                import hashlib
                 actual_hash = hashlib.sha1(file_data).hexdigest()
                 if actual_hash != hv_file.getHash():
                     Out.warning(f"Downloaded file hash mismatch: {actual_hash} != {hv_file.getHash()}")
@@ -699,7 +704,7 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 Out.warning(f"Failed to download from {source_url}: {e}")
                 continue
         
-        return None
+        return None  # type: ignore
     
     def _save_downloaded_file_to_cache(self, file_data: bytes, hv_file) -> bool:
         """Save downloaded file data to cache directory."""
@@ -813,7 +818,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 Stats.fileSent()
         else:
             # Multiple ranges - use multipart/byteranges
-            import uuid
             boundary = f"----boundary_{uuid.uuid4().hex}"
             
             # Calculate total content length
@@ -904,7 +908,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 return
             
             # Java: if(!Tools.getSHA1String("hentai@home-speedtest-" + testsize + "-" + testtime + "-" + Settings.getClientID() + "-" + Settings.getClientKey()).equals(testkey))
-            from .tools import Tools
             expected_key = Tools.get_sha1_string(f"hentai@home-speedtest-{testsize}-{testtime}-{Settings.get_client_id()}-{Settings.get_client_key()}")
             
             if expected_key != testkey:
@@ -976,7 +979,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             
             # Validate key using exact Java format: 
             # Tools.getSHA1String("hentai@home-servercmd-" + command + "-" + additional + "-" + Settings.getClientID() + "-" + commandTime + "-" + Settings.getClientKey())
-            from .tools import Tools
             expected_key = Tools.get_sha1_string(f"hentai@home-servercmd-{command}-{additional}-{Settings.get_client_id()}-{command_time}-{Settings.get_client_key()}")
             
             if not expected_key == key:
@@ -997,7 +999,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
             elif command == 'speed_test':
                 # Java: String testsize = addTable.get("testsize");
                 # Java: return new HTTPResponseProcessorSpeedtest(testsize != null ? Integer.parseInt(testsize) : 1000000);
-                from .tools import Tools
                 add_table = Tools.parse_additional(additional)
                 testsize_str = add_table.get('testsize')
                 testsize = int(testsize_str) if testsize_str else 1000000
@@ -1013,7 +1014,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
                 if self.command == 'GET':
                     # Send random test data (matching Java HTTPResponseProcessorSpeedtest)
-                    import random
                     random_length = 8192
                     random_bytes = bytes([random.randint(0, 255) for _ in range(random_length)])
                     
@@ -1056,49 +1056,86 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                 
             elif command == 'threaded_proxy_test':
                 # Java: return processThreadedProxyTest(addTable);
-                # Implement a basic proxy connectivity test
+                # Match Java implementation exactly
                 Out.info(f"Server command: threaded_proxy_test from {self.client_address[0]}")
                 successful_tests = 0
                 total_time_millis = 0
                 
                 try:
-                    # Check if proxy is configured
-                    proxy_host = Settings.get_image_proxy_host()
-                    proxy_port = Settings.get_image_proxy_port()
-                    proxy_type = Settings.get_image_proxy_type()
+                    # Parse additional parameters provided by server
+                    add_table = Tools.parse_additional(additional)
                     
-                    if proxy_host and proxy_type:
-                        import time
-                        import requests
+                    hostname = add_table.get('hostname')
+                    protocol = add_table.get('protocol', 'http')
+                    port = int(add_table.get('port', 80))
+                    test_size = int(add_table.get('testsize', 1000000))
+                    test_count = int(add_table.get('testcount', 1))
+                    test_time = int(add_table.get('testtime'))  # type: ignore
+                    test_key = add_table.get('testkey')
+                    
+                    Out.debug(f"Running speedtest against hostname={hostname} protocol={protocol} port={port} testsize={test_size} testcount={test_count} testtime={test_time} testkey={test_key}")
+                    
+                    if hostname and test_key:
                         
-                        start_time = time.time()
+                        def download_test(test_index):
+                            """Perform a single download test (matching Java FileDownloader behavior)."""
+                            try:
+                                # Match Java: new URL(protocol, hostname, port, "/t/" + testsize + "/" + testtime + "/" + testkey + "/" + random)
+                                random_value = int(random.random() * 2147483647)  # Java Integer.MAX_VALUE
+                                test_url = f"{protocol}://{hostname}:{port}/t/{test_size}/{test_time}/{test_key}/{random_value}"
+                                
+                                Out.debug(f"Test thread {test_index}: {test_url}")
+                                
+                                start_time = time.time()
+                                
+                                # Match Java: 10000ms connection timeout, 60000ms read timeout
+                                response = requests.get(test_url, timeout=(10, 60), stream=True)
+                                
+                                # Download and measure content length
+                                content_length = 0
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        content_length += len(chunk)
+                                
+                                end_time = time.time()
+                                download_time_millis = int((end_time - start_time) * 1000)
+                                
+                                # Match Java: if(dler.getContentLength() >= testsize)
+                                if response.status_code == 200 and content_length >= test_size:
+                                    return (True, download_time_millis)
+                                else:
+                                    Out.debug(f"Test {test_index} failed: status={response.status_code}, content_length={content_length}")
+                                    return (False, 0)
+                                    
+                            except Exception as e:
+                                Out.debug(f"Test {test_index} failed: {e}")
+                                return (False, 0)
                         
-                        # Test proxy connectivity with a simple request
-                        proxy_url = f"{proxy_type}://{proxy_host}:{proxy_port}"
-                        proxies = {'http': proxy_url, 'https': proxy_url}
-                        
-                        # Test with a reliable endpoint (Google DNS over HTTPS)
-                        test_url = "https://dns.google/resolve?name=google.com&type=A"
-                        
-                        try:
-                            response = requests.get(test_url, proxies=proxies, timeout=10)
-                            if response.status_code == 200:
-                                successful_tests = 1
+                        # Match Java: start multiple async downloads simultaneously
+                        with ThreadPoolExecutor(max_workers=test_count) as executor:
+                            # Submit all download tasks
+                            future_to_test = {executor.submit(download_test, i): i for i in range(test_count)}
                             
-                        except Exception as e:
-                            Out.debug(f"Proxy test failed: {e}")
+                            # Wait for all downloads to complete and collect results
+                            for future in as_completed(future_to_test):
+                                test_index = future_to_test[future]
+                                try:
+                                    success, download_time = future.result()
+                                    if success:
+                                        successful_tests += 1
+                                        total_time_millis += download_time
+                                except Exception as e:
+                                    Out.debug(f"Test {test_index} exception: {e}")
                         
-                        end_time = time.time()
-                        total_time_millis = int((end_time - start_time) * 1000)
-                        
-                        Out.info(f"Proxy test completed: {successful_tests} successful, {total_time_millis}ms")
+                        Out.debug(f"Ran speedtest against hostname={hostname} testsize={test_size} testcount={test_count}, reporting successfulTests={successful_tests} totalTimeMillis={total_time_millis}")
                     else:
-                        Out.info("No proxy configured, skipping proxy test")
+                        Out.warning("Missing required parameters for threaded_proxy_test (hostname or testkey)")
                         
                 except Exception as e:
                     Out.warning(f"Proxy test error: {e}")
+                    traceback.print_exc()
                 
-                # Format response like Java: OK:successfulTests-totalTimeMillis
+                # Format response exactly like Java: "OK:" + successfulTests + "-" + totalTimeMillis
                 response_text = f"OK:{successful_tests}-{total_time_millis}"
                 
                 self.send_response(200)
@@ -1118,7 +1155,6 @@ class HTTPRequestHandler(BaseHTTPRequestHandler):
                         if not hasattr(client, 'gallery_downloader') or client.gallery_downloader is None:
                             if Settings.get_bool('enable_gallery_downloader', True):
                                 Out.info("Starting gallery downloader via server command...")
-                                from .gallery_downloader import GalleryDownloader
                                 client.gallery_downloader = GalleryDownloader(client)
                                 Out.info("Gallery downloader started successfully")
                             else:
@@ -1419,9 +1455,6 @@ class HTTPServer:
             # Load PKCS#12 certificate directly
             try:
                 if Path(p12_path).exists():
-                    from cryptography.hazmat.primitives.serialization import pkcs12
-                    from cryptography.hazmat.primitives import serialization
-                    import tempfile
                     
                     # Read PKCS#12 data
                     with open(p12_path, 'rb') as f:
@@ -1478,7 +1511,6 @@ class HTTPServer:
                     ssl_context.load_cert_chain(temp_cert_path, temp_key_path)
                     
                     # Clean up temporary files
-                    import os
                     try:
                         os.unlink(temp_cert_path)
                         os.unlink(temp_key_path)

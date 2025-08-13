@@ -2,15 +2,19 @@
 Server handler for communicating with Hentai@Home servers.
 """
 
+import base64
+import datetime
 import time
 import requests
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from urllib.parse import urlencode
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 from .out import Out
 from .settings import Settings
 from .tools import Tools
+from .cake_sphere import get_cake_sphere_manager
 
 
 class ServerHandler:
@@ -109,11 +113,6 @@ class ServerHandler:
             Out.debug(f"Server stat refresh failed: {response}")
             return False
     
-    def notify_start(self) -> bool:
-        """Notify server that client has started."""
-        response = self._get_server_response(self.ACT_CLIENT_START)
-        return response is not None and response.get('status') == 'OK'
-    
     def notify_shutdown(self) -> bool:
         """Notify server that client is shutting down."""
         response = self._get_server_response(self.ACT_CLIENT_STOP)
@@ -138,7 +137,7 @@ class ServerHandler:
         """
         # Java: CakeSphere cs = new CakeSphere(this, client);
         # Java: cs.stillAlive(resume);
-        from .cake_sphere import get_cake_sphere_manager
+        cake_sphere_manager = get_cake_sphere_manager()
         
         cake_sphere_manager = get_cake_sphere_manager()
         cake_sphere_manager.still_alive_test(self, self.client, resume)
@@ -491,8 +490,6 @@ class ServerHandler:
     def is_certificate_valid(self) -> bool:
         """Check if SSL certificate exists and is valid."""
         try:
-            from cryptography.hazmat.primitives.serialization import pkcs12
-            import datetime
             
             p12_path = Settings.get_data_dir() / "client.p12"
             
@@ -680,7 +677,6 @@ class ServerHandler:
                     
                     try:
                         # Certificate data should be base64 encoded
-                        import base64
                         cert_bytes = base64.b64decode(cert_data)
                         
                         # Write certificate file
