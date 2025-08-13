@@ -5,9 +5,12 @@ Utility tools and helper functions for Hentai@Home Python Client.
 import hashlib
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import List, Optional, Union
+
+from .out import Out
 
 
 class Tools:
@@ -46,7 +49,6 @@ class Tools:
                         if len(kv_pair_parts) == 2:
                             add_table[kv_pair_parts[0].strip()] = kv_pair_parts[1].strip()
                         else:
-                            from .out import Out
                             Out.warning(f"Invalid kvPair: {kv_pair}")
                     elif '=' in kv_pair:
                         # Handle edge cases like "a=" or "=b"
@@ -128,7 +130,6 @@ class Tools:
         except (AttributeError, OSError):
             # Fallback for Windows
             try:
-                import shutil
                 return shutil.disk_usage(str(path)).free
             except Exception:
                 return 0
@@ -170,7 +171,6 @@ class Tools:
                 return True
             except OSError:
                 # If rename fails (cross-filesystem), try copy + delete
-                import shutil
                 shutil.copy2(src, dst)
                 src.unlink()
                 return True

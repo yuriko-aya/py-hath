@@ -4,10 +4,19 @@ Cache handler for managing local file cache.
 
 import os
 import pickle
+import re
+import shutil
 import threading
 import time
 from pathlib import Path
 from typing import Dict, Optional, Set
+
+try:
+    import javaobj
+    JAVAOBJ_AVAILABLE = True
+except ImportError:
+    javaobj = None
+    JAVAOBJ_AVAILABLE = False
 
 from .out import Out
 from .settings import Settings
@@ -26,7 +35,7 @@ class HVFile:
     
     def get_local_file_ref(self) -> Path:
         """Get the local file path for this cached file."""
-        # Files are stored in subdirectories based on first 2 characters of file_id
+        # Files are stored in subdirectories based on first 2 characters of file_id (static range)
         if len(self.file_id) >= 2:
             subdir = self.file_id[:2]
             cache_dir = Settings.get_cache_dir()
@@ -108,8 +117,6 @@ class HVFile:
         Returns:
             True if valid, False otherwise
         """
-        import re
-        
         # Pattern for hash-size-xres-yres-type format
         pattern1 = r'^[a-f0-9]{40}-[0-9]{1,10}-[0-9]{1,5}-[0-9]{1,5}-(jpg|png|gif|mp4|wbm|wbp|avf|jxl)$'
         
@@ -164,11 +171,16 @@ class CacheHandler:
         fast_startup = False
         if not Settings._rescan_cache:
             Out.info("CacheHandler: Attempting to load persistent cache data...")
-            if self._load_persistent_data():
-                Out.info("CacheHandler: Successfully loaded persistent cache data")
-                fast_startup = True
-            else:
-                Out.info("CacheHandler: Persistent cache data is not available")
+            try:
+                if self._load_persistent_data():
+                    Out.info("CacheHandler: Successfully loaded persistent cache data")
+                    fast_startup = True
+                else:
+                    Out.info("CacheHandler: Persistent cache data is not available")
+            except RuntimeError as e:
+                # Fatal error loading cache data - this should trigger shutdown
+                Out.error("CacheHandler: Fatal error during cache initialization!")
+                raise e  # Re-raise to trigger shutdown
         
         # Delete persistent data (it's loaded now)
         self._delete_persistent_data()
@@ -268,7 +280,6 @@ class CacheHandler:
                 Out.debug(f"CacheHandler: Removing invalid static range directory {l1_dir}")
                 try:
                     # Remove the entire directory
-                    import shutil
                     shutil.rmtree(l1_dir)
                 except Exception as e:
                     Out.warning(f"Failed to remove directory {l1_dir}: {e}")
@@ -320,10 +331,8 @@ class CacheHandler:
                 if hv_file is None:
                     Out.debug(f"CacheHandler: The file {file_path} was corrupt.")
                     Tools.safe_delete_file(file_path)
-                elif not Settings.is_static_range(hv_file.get_static_range()):
-                    Out.debug(f"CacheHandler: The file {file_path} was not in an active static range.")
-                    Tools.safe_delete_file(file_path)
                 else:
+                    # File is valid and we already verified the directory represents a valid static range
                     self._add_file_to_active_cache(hv_file)
                     file_last_modified = file_path.stat().st_mtime * 1000
                     if file_last_modified < oldest_last_modified:
@@ -456,13 +465,25 @@ class CacheHandler:
         # means that each element will live up to a week (since 1048576 / (8640 * 7) is roughly 17).
         if self.lru_cache_table is None:
             return
+        
+        # Ensure the LRU cache table has the expected size
+        if len(self.lru_cache_table) != self.LRU_CACHE_SIZE:
+            Out.warning(f"CacheHandler: LRU cache table size mismatch: {len(self.lru_cache_table)} != {self.LRU_CACHE_SIZE}, reinitializing")
+            self.lru_cache_table = [0] * self.LRU_CACHE_SIZE
+            self.lru_clear_pointer = 0
+        
+        # Ensure lru_clear_pointer is within bounds
+        if self.lru_clear_pointer >= len(self.lru_cache_table):
+            Out.warning(f"CacheHandler: LRU clear pointer out of bounds: {self.lru_clear_pointer} >= {len(self.lru_cache_table)}, resetting")
+            self.lru_clear_pointer = 0
             
         clear_until = min(self.LRU_CACHE_SIZE, self.lru_clear_pointer + 17)
         
         # Out.debug(f"CacheHandler: Clearing lruCacheTable from {self.lru_clear_pointer} to {clear_until}")
         
         while self.lru_clear_pointer < clear_until:
-            self.lru_cache_table[self.lru_clear_pointer] = 0
+            if self.lru_clear_pointer < len(self.lru_cache_table):
+                self.lru_cache_table[self.lru_clear_pointer] = 0
             self.lru_clear_pointer += 1
         
         if clear_until >= self.LRU_CACHE_SIZE:
@@ -578,7 +599,6 @@ class CacheHandler:
                 if not Settings.is_static_range(cache_dir.name):
                     # Remove directories for inactive static ranges
                     try:
-                        import shutil
                         shutil.rmtree(cache_dir)
                         Out.debug(f"CacheHandler: Removed directory for inactive static range: {cache_dir.name}")
                     except Exception as e:
@@ -657,8 +677,14 @@ class CacheHandler:
                     Out.debug(f"CacheHandler: Loaded persistent cacheSize={self.cache_size}")
                     info_checksum |= 2
                 elif key == 'lruClearPointer':
-                    self.lru_clear_pointer = int(value)
-                    Out.debug(f"CacheHandler: Loaded persistent lruClearPointer={self.lru_clear_pointer}")
+                    loaded_pointer = int(value)
+                    # Validate the loaded pointer is within bounds
+                    if 0 <= loaded_pointer < self.LRU_CACHE_SIZE:
+                        self.lru_clear_pointer = loaded_pointer
+                    else:
+                        Out.warning(f"CacheHandler: Loaded lruClearPointer {loaded_pointer} is out of bounds, using 0")
+                        self.lru_clear_pointer = 0
+                    Out.debug(f"CacheHandler: Set lruClearPointer={self.lru_clear_pointer}")
                     info_checksum |= 4
                 elif key == 'agesHash':
                     ages_hash = value
@@ -678,10 +704,36 @@ class CacheHandler:
             else:
                 Out.info("CacheHandler: All persistent fields found, loading remaining objects")
                 
+                # Ensure hashes are not None
+                if ages_hash is None or lru_hash is None:
+                    Out.warning("CacheHandler: Missing hash values, forcing rescan")
+                    return False
+                
                 # Load static range ages
-                self.static_range_oldest = self._read_cache_object(
+                ages_data = self._read_cache_object(
                     Settings.get_data_dir() / "pcache_ages", ages_hash
                 )
+                if isinstance(ages_data, dict):
+                    self.static_range_oldest = ages_data
+                    
+                    # Convert 4-character Java cache static ranges to 2-character ranges for Settings
+                    # This ensures that files from Java cache aren't marked as invalid
+                    if ages_data and not Settings._static_ranges:
+                        Out.debug("CacheHandler: Converting Java cache 4-char static ranges to 2-char ranges for Settings")
+                        derived_ranges = {}
+                        for java_range in ages_data.keys():
+                            if len(java_range) >= 2:
+                                two_char_range = java_range[:2]
+                                derived_ranges[two_char_range] = 1
+                        
+                        if derived_ranges:
+                            Settings._static_ranges = derived_ranges
+                            Settings._current_static_range_count = len(derived_ranges)
+                            Out.debug(f"CacheHandler: Derived {len(derived_ranges)} 2-char static ranges: {list(derived_ranges.keys())}")
+                    
+                else:
+                    Out.warning("CacheHandler: Ages data is not a dict, forcing rescan")
+                    return False
                 
                 if len(self.static_range_oldest) > Settings.get_static_range_count():
                     Out.info("CacheHandler: The count of cached static range ages is higher than the current static range count; forcing rescan to prevent orphaned ranges")
@@ -689,13 +741,35 @@ class CacheHandler:
                     Out.info("CacheHandler: Loaded static range ages")
                     
                     # Load LRU cache table (as list in Python, since we don't have fixed-size arrays)
-                    self.lru_cache_table = self._read_cache_object(
+                    lru_data = self._read_cache_object(
                         Settings.get_data_dir() / "pcache_lru", lru_hash
                     )
+                    if isinstance(lru_data, list):
+                        # Ensure LRU data has the correct size
+                        if len(lru_data) == self.LRU_CACHE_SIZE:
+                            self.lru_cache_table = lru_data
+                        else:
+                            Out.warning(f"CacheHandler: LRU data size mismatch: {len(lru_data)} != {self.LRU_CACHE_SIZE}, creating new table")
+                            self.lru_cache_table = [0] * self.LRU_CACHE_SIZE
+                    else:
+                        Out.warning("CacheHandler: LRU data is not a list, forcing rescan")
+                        return False
                     Out.info("CacheHandler: Loaded LRU cache")
                     
                     success = True
                     
+        except RuntimeError as e:
+            # Fatal error - cannot continue with incompatible cache data
+            Out.error(f"CacheHandler: Fatal error loading persistent cache data: {e}")
+            Out.error("CacheHandler: This is a critical error that requires immediate shutdown.")
+            Out.error("CacheHandler: Please either:")
+            Out.error("  1. Install required dependencies (javaobj-py3) to read Java cache data")
+            Out.error("  2. Delete the cache data files and restart with a clean cache")
+            Out.error("  3. Use the --rescan-cache option to force cache rebuild")
+            
+            # Re-raise as a fatal error
+            raise RuntimeError(f"Cannot load persistent cache data: {e}")
+            
         except Exception as e:
             Out.debug(f"CacheHandler: Error loading persistent data: {e}")
         
@@ -769,9 +843,59 @@ class CacheHandler:
             Out.warning(f"CacheHandler: Incorrect file hash while reading {file_path}, forcing rescan")
             raise IOError("Incorrect file hash")
         
-        # Read the pickled object
+        # Check if it's Java serialization format (starts with 0xaced0005)
         with open(file_path, 'rb') as f:
-            return pickle.load(f)
+            magic = f.read(4)
+            f.seek(0)
+            
+            if magic == b'\xac\xed\x00\x05':
+                # Java serialized data
+                if not JAVAOBJ_AVAILABLE:
+                    Out.error("CacheHandler: Found Java serialized cache data but javaobj library is not available!")
+                    Out.error("CacheHandler: Please install javaobj-py3: pip install javaobj-py3")
+                    Out.error("CacheHandler: Cannot continue with incompatible cache data format.")
+                    raise RuntimeError("Java serialized cache data requires javaobj-py3 library")
+                
+                try:
+                    Out.debug(f"CacheHandler: Reading Java serialized object from {file_path}")
+                    java_obj = javaobj.load(f)  # type: ignore
+                    
+                    # Convert Java Hashtable to Python dict
+                    if hasattr(java_obj, 'annotations') and java_obj.classdesc.name == 'java.util.Hashtable':
+                        # Java Hashtable data is stored in annotations as alternating key-value pairs
+                        annotations = java_obj.annotations
+                        # Skip the first element (binary data) and process pairs starting from index 1
+                        data = {}
+                        i = 1  # Start after binary data
+                        while i + 1 < len(annotations):
+                            key = str(annotations[i])
+                            value = int(annotations[i + 1])
+                            data[key] = value
+                            i += 2
+                        Out.debug(f"CacheHandler: Converted Java Hashtable with {len(data)} entries")
+                        return data
+                    elif hasattr(java_obj, 'annotations') and '[S' in str(java_obj.classdesc.name):
+                        # Java short array - convert to Python list
+                        Out.debug(f"CacheHandler: Converting Java short array with {len(java_obj.annotations)} elements")
+                        return list(java_obj.annotations)
+                    else:
+                        Out.error(f"CacheHandler: Unknown Java object type: {java_obj.classdesc.name}")
+                        Out.error("CacheHandler: Cannot continue with unknown cache data format.")
+                        raise RuntimeError(f"Unknown Java object type: {java_obj.classdesc.name}")
+                        
+                except Exception as e:
+                    Out.error(f"CacheHandler: Failed to read Java serialized cache data: {e}")
+                    Out.error("CacheHandler: Cache data is corrupted or incompatible.")
+                    raise RuntimeError(f"Failed to read Java cache data: {e}")
+            else:
+                # Python pickle format
+                try:
+                    f.seek(0)
+                    return pickle.load(f)
+                except Exception as e:
+                    Out.error(f"CacheHandler: Failed to read Python pickle cache data: {e}")
+                    Out.error("CacheHandler: Cache data is corrupted.")
+                    raise RuntimeError(f"Failed to read Python cache data: {e}")
     
     def _write_cache_object(self, file_path: Path, obj) -> str:
         """Write a cache object to file and return its SHA1 hash (equivalent to Java writeCacheObject)."""
@@ -786,6 +910,9 @@ class CacheHandler:
         
         # Calculate and return hash
         file_hash = Tools.get_file_sha1(file_path)
+        if file_hash is None:
+            raise RuntimeError(f"Failed to calculate hash for {file_path}")
+        
         file_size = file_path.stat().st_size
         Out.debug(f"Wrote cache object {file_path} with size={file_size} hash={file_hash}")
         

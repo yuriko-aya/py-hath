@@ -76,4 +76,4 @@ client_login
 *.log
 pcache_*
 test*
-hath-source
+*-source

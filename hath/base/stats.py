@@ -8,8 +8,10 @@ client performance, cache status, and network activity.
 import threading
 import time
 from typing import List, Dict, Optional, Any
+
 from .stat_listener import StatListener
 from .settings import Settings
+from .out import Out
 
 
 class Stats:
@@ -70,18 +72,6 @@ class Stats:
     def increment_files_received(self):
         """Increment files received counter (instance method)."""
         self.__class__.file_received()
-    
-    def add_bytes_sent(self, bytes_count: int):
-        """Add to bytes sent counter (instance method)."""
-        self.__class__.add_bytes_sent(bytes_count)
-    
-    def add_bytes_received(self, bytes_count: int):
-        """Add to bytes received counter (instance method)."""
-        self.__class__.add_bytes_received(bytes_count)
-    
-    def set_open_connections(self, count: int):
-        """Set open connections count (instance method)."""
-        self.__class__.set_open_connections(count)
     
     @classmethod
     def reset_stats(cls):
@@ -153,7 +143,6 @@ class Stats:
                     listener.stat_changed(stat_name)
                 except Exception as e:
                     # Don't let listener errors crash the stats system
-                    from .out import Out
                     Out.warning(f"Error in stat listener: {e}")
     
     # Status methods
@@ -455,7 +444,6 @@ class Stats:
     @classmethod
     def server_contact(cls):
         """Record a successful server contact (used by CakeSphere)."""
-        import time
         timestamp = int(time.time() * 1000)
         cls.set_last_server_contact(timestamp)
     

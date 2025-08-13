@@ -2,6 +2,7 @@
 Main Hentai@Home client implementation in Python.
 """
 
+import random
 import signal
 import sys
 import threading
@@ -12,6 +13,11 @@ from .out import Out
 from .settings import Settings
 from .input_query_handler_cli import InputQueryHandlerCLI
 from .stats import Stats
+from .client_api import ClientAPI
+from .server_handler import ServerHandler
+from .cache_handler import CacheHandler
+from .http_server import HTTPServer
+from .gallery_downloader import GalleryDownloader
 
 
 class HentaiAtHomeClient:
@@ -98,14 +104,12 @@ class HentaiAtHomeClient:
         Out.info("Initializing client components...")
         
         # Initialize client API for programmatic control
-        from .client_api import ClientAPI
         self.client_api = ClientAPI(self)
         
         # Update stats
         Stats.set_program_status("Initializing client API...")
         
         # Initialize server handler
-        from .server_handler import ServerHandler
         self.server_handler = ServerHandler(self)
         
         # Load client settings from server
@@ -115,7 +119,6 @@ class HentaiAtHomeClient:
         Stats.set_program_status("Initializing cache handler...")
         
         # Initialize cache handler
-        from .cache_handler import CacheHandler
         try:
             self.cache_handler = CacheHandler(self)
         except Exception as e:
@@ -130,7 +133,6 @@ class HentaiAtHomeClient:
         Stats.set_program_status("Starting HTTP server...")
         
         # Initialize HTTP server
-        from .http_server import HTTPServer
         self.http_server = HTTPServer(self)
         
         if not self.http_server.start_connection_listener(Settings.get_client_port()):
@@ -152,7 +154,6 @@ class HentaiAtHomeClient:
         # Initialize gallery downloader for bulk downloads
         if Settings.get_bool('enable_gallery_downloader', True):
             Out.info("Starting gallery downloader...")
-            from .gallery_downloader import GalleryDownloader
             try:
                 self.gallery_downloader = GalleryDownloader(self)
                 Out.info("Gallery downloader started successfully")
@@ -352,7 +353,6 @@ class HentaiAtHomeClient:
                     self._http_server_shutdown(False)
             
             # Random shutdown message
-            import random
             if random.random() > 0.99:
                 Out.info("Goodbye! Thanks for running Hentai@Home!")
             else:
