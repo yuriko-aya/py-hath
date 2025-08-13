@@ -8,6 +8,7 @@ tools and scripts to suspend, resume, and modify settings programmatically.
 from typing import TYPE_CHECKING
 from .client_api_result import ClientAPIResult
 from .out import Out
+from .settings import Settings
 
 if TYPE_CHECKING:
     from .hentai_at_home_client import HentaiAtHomeClient
@@ -85,7 +86,7 @@ class ClientAPI:
             return ClientAPIResult(self.API_COMMAND_REFRESH_SETTINGS, "FAIL")
     
     def modify_setting(self, setting_name: str, setting_value: str) -> ClientAPIResult:
-        """Modify a client setting (placeholder implementation).
+        """Modify a client setting.
         
         Args:
             setting_name: Name of the setting to modify
@@ -96,10 +97,39 @@ class ClientAPI:
         """
         try:
             Out.debug(f"ClientAPI: Modifying setting {setting_name} = {setting_value}")
-            # TODO: Implement setting modification when Settings class supports it
-            # For now, just return OK as a placeholder
-            Out.warning("ClientAPI: Setting modification not yet implemented")
-            return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "FAIL")
+            
+            # Map setting names to Settings class methods
+            if setting_name == "client_port":
+                try:
+                    port = int(setting_value)
+                    Settings.set_client_port(port)
+                    return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "OK")
+                except ValueError:
+                    Out.error(f"ClientAPI: Invalid port value: {setting_value}")
+                    return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "FAIL")
+            
+            elif setting_name == "disk_limit_bytes":
+                try:
+                    limit = int(setting_value)
+                    Settings.set_disk_limit_bytes(limit)
+                    return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "OK")
+                except ValueError:
+                    Out.error(f"ClientAPI: Invalid disk limit value: {setting_value}")
+                    return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "FAIL")
+            
+            elif setting_name == "throttle_bytes_per_sec":
+                try:
+                    throttle = int(setting_value)
+                    Settings.set_throttle_bytes_per_sec(throttle)
+                    return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "OK")
+                except ValueError:
+                    Out.error(f"ClientAPI: Invalid throttle value: {setting_value}")
+                    return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "FAIL")
+            
+            else:
+                Out.warning(f"ClientAPI: Setting '{setting_name}' is not modifiable via API")
+                return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "FAIL")
+                
         except Exception as e:
             Out.error(f"ClientAPI: Failed to modify setting: {e}")
             return ClientAPIResult(self.API_COMMAND_MODIFY_SETTING, "FAIL")

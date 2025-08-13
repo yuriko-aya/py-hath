@@ -315,9 +315,16 @@ class HentaiAtHomeClient:
     
     def delete_downloader(self):
         """Clean up gallery downloader resources."""
-        # For now, this is a placeholder method
-        # In a full implementation, this would clean up downloader resources
-        pass
+        if self.gallery_downloader:
+            try:
+                Out.debug("Cleaning up gallery downloader resources...")
+                self.gallery_downloader.shutdown()
+                self.gallery_downloader = None
+                Out.debug("Gallery downloader resources cleaned up successfully")
+            except Exception as e:
+                Out.warning(f"Error cleaning up gallery downloader resources: {e}")
+        else:
+            Out.debug("No gallery downloader to clean up")
     
     def shutdown(self):
         """Initiate client shutdown."""
@@ -386,9 +393,8 @@ class HentaiAtHomeClient:
                 max_wait_cycles = 25
                 
                 while close_wait_cycles < max_wait_cycles:
-                    # Check if there are open connections (placeholder)
-                    # In a real implementation, this would check actual connection count
-                    open_connections = 0  # self.http_server.get_open_connections()
+                    # Check if there are open connections
+                    open_connections = self.get_open_connections_count()
                     
                     if open_connections == 0:
                         break
@@ -409,13 +415,15 @@ class HentaiAtHomeClient:
         Out.error(f"Critical Error: {error}")
         sys.exit(1)
     
-    def get_server_handler(self):
-        """Get the server handler instance."""
-        return self.server_handler
-    
-    def get_cache_handler(self):
-        """Get the cache handler instance."""
-        return self.cache_handler
+    def get_open_connections_count(self) -> int:
+        """Get the number of currently open HTTP connections.
+        
+        Returns:
+            Number of active HTTP sessions/connections
+        """
+        if self.http_server and hasattr(self.http_server, 'session_manager'):
+            return self.http_server.session_manager.get_session_count()
+        return 0
     
     def get_http_server(self):
         """Get the HTTP server instance."""
