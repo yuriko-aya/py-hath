@@ -77,3 +77,4 @@ client_login
 pcache_*
 test*
 *-source
+*.bak
