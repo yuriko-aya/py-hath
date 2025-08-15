@@ -1,5 +1,43 @@
 # py-hath Changes
 
+## [Version 1.6.4#py] - 2025-08-15 (Static Range Validation and Cache Management Bug Fixes - Build 179)
+
+### Static Range Validation Improvements
+- **Fixed Static Range File Validation Logic**: Corrected file-level static range checking to use 4-character range IDs instead of 2-character directory names
+  - **`settings.py`**: Modified `is_static_range()` method to check first 4 characters of file ID against static range keys
+    - Previous implementation incorrectly used 2-character prefix matching against directory names
+    - **Impact**: More accurate file validation preventing false positives and cache corruption
+    - **Before**: `static_range = file_id[:2]` with substring matching against directory names
+    - **After**: `static_range = file_id[:4]` with direct key lookup in static ranges dictionary
+
+### Cache Handler Robustness Improvements  
+- **Fixed Cache Directory vs File Validation**: Updated cache management to validate individual files rather than entire directories
+  - **`cache_handler.py`**: Multiple fixes to separate directory traversal from file validation
+    - **File Count Validation**: Fixed cache file counting to check individual file names rather than assuming directory validity
+    - **Cache Cleanup Process**: Modified cleanup to remove invalid files rather than entire directories
+    - **Cache Initialization**: Updated startup scan to validate files individually instead of skipping directories
+    - **Cache Pruning**: Fixed oldest file detection to check file names rather than directory names
+    - **Blacklist Processing**: Improved invalid file detection with proper file-level validation
+    - **Impact**: Prevents accidental deletion of valid files in mixed-content directories, more granular cache management
+
+### Server Communication Enhancements
+- **Added Static Range Count Parsing**: Enhanced server settings parsing to handle static range count updates
+  - **`server_handler.py`**: Added parsing for `static_range_count` setting from server responses
+    - Enables dynamic update of static range count during runtime
+    - **Impact**: Better synchronization with server-side static range assignments
+
+### Technical Implementation Details
+- **Validation Strategy**: Shifted from directory-based to file-based static range validation for accuracy
+- **Error Prevention**: Multiple safeguards added to prevent deletion of valid cache files
+- **Performance**: More efficient static range lookup using direct dictionary access instead of substring matching
+- **Compatibility**: All changes maintain existing Java compatibility patterns
+
+### Bug Fixes Summary
+- **Files Modified**: 3 core files (`cache_handler.py`, `server_handler.py`, `settings.py`)
+- **Static Range Validation**: Fixed 4-character range ID validation vs incorrect 2-character matching
+- **Cache Management**: 5 separate fixes to prevent invalid file deletion and improve cache accuracy
+- **Server Synchronization**: Added missing static range count parsing for better server coordination
+
 ## [Version 1.6.4#py] - 2025-08-13 (Import Organization and Code Quality Improvements - Build 178)
 
 ### Code Organization and PEP 8 Compliance

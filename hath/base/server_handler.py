@@ -324,6 +324,10 @@ class ServerHandler:
                 elif key == 'static_ranges':
                     self._parse_static_ranges(value)
                     Out.info(f"Static ranges updated: {Settings.get_static_range_count()} ranges")
+
+                elif key == 'static_range_count':
+                    Settings._current_static_range_count = int(value)
+                    Out.debug(f"Static range count set to: {Settings._current_static_range_count}")
                     
                 elif key == 'rpc_server_port':
                     rpc_port = int(value)

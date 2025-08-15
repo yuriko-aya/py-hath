@@ -274,9 +274,8 @@ class Settings:
         """Check if a file ID belongs to a static range."""
         if not file_id or len(file_id) < 2:
             return False
-        static_range = file_id[:2]
-        # Check if any 4-character static range key starts with our 2-character range
-        return any(key.startswith(static_range) for key in cls._static_ranges.keys())
+        static_range = file_id[:4]
+        return static_range in cls._static_ranges
     
     @classmethod
     def get_static_range_count(cls) -> int:
