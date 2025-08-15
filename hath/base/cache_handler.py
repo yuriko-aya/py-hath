@@ -220,9 +220,8 @@ class CacheHandler:
             # Quick check if there are actually files in cache directories
             actual_file_count = 0
             for cache_dir in Tools.list_sorted_dirs(self.cache_dir):
-                if Settings.is_static_range(cache_dir.name):
-                    files = Tools.list_sorted_files(cache_dir)
-                    actual_file_count += len([f for f in files if f.is_file()])
+                files = Tools.list_sorted_files(cache_dir)
+                actual_file_count += len([f for f in files if f.is_file() and Settings.is_static_range(f.name)])
             
             if actual_file_count > 0:
                 Out.warning(f"CacheHandler: Found {actual_file_count} files on disk but cache count is 0")
@@ -275,14 +274,12 @@ class CacheHandler:
             if self.client.is_shutting_down():
                 break
             
-            # Check if this is a valid static range directory
-            if not Settings.is_static_range(l1_dir.name):
-                Out.debug(f"CacheHandler: Removing invalid static range directory {l1_dir}")
-                try:
-                    # Remove the entire directory
-                    shutil.rmtree(l1_dir)
-                except Exception as e:
-                    Out.warning(f"Failed to remove directory {l1_dir}: {e}")
+            # Loop the directory, check if file is in a valid static range
+            files = Tools.list_sorted_files(l1_dir)
+            for file in files:
+                if not Settings.is_static_range(file.name):
+                    Out.debug(f"CacheHandler: Removing invalid static range file {file}")
+                    Tools.safe_delete_file(file)
             
             checked_counter += 1
             
@@ -306,10 +303,7 @@ class CacheHandler:
         for cache_dir in cache_dirs:
             if self.client.is_shutting_down():
                 break
-            
-            if not Settings.is_static_range(cache_dir.name):
-                continue
-            
+                       
             files = Tools.list_sorted_files(cache_dir)
             
             if not files:
@@ -323,6 +317,9 @@ class CacheHandler:
             oldest_last_modified = time.time() * 1000
             
             for file_path in files:
+                if not Settings.is_static_range(file_path.name):
+                    continue
+
                 if not file_path.is_file():
                     continue
                 
@@ -405,10 +402,9 @@ class CacheHandler:
         
         # Find oldest file
         for cache_dir in Tools.list_sorted_dirs(self.cache_dir):
-            if not Settings.is_static_range(cache_dir.name):
-                continue
-            
             for file_path in Tools.list_sorted_files(cache_dir):
+                if not Settings.is_static_range(file_path.name):
+                    continue
                 try:
                     mtime = file_path.stat().st_mtime
                     if mtime < oldest_time:
@@ -596,15 +592,6 @@ class CacheHandler:
             
             # Process cache directories to find invalid files
             for cache_dir in Tools.list_sorted_dirs(self.cache_dir):
-                if not Settings.is_static_range(cache_dir.name):
-                    # Remove directories for inactive static ranges
-                    try:
-                        shutil.rmtree(cache_dir)
-                        Out.debug(f"CacheHandler: Removed directory for inactive static range: {cache_dir.name}")
-                    except Exception as e:
-                        Out.warning(f"CacheHandler: Failed to remove inactive range directory {cache_dir}: {e}")
-                    continue
-                
                 # Check files in valid static range directories
                 for file_path in Tools.list_sorted_files(cache_dir):
                     if not file_path.is_file():
@@ -614,7 +601,7 @@ class CacheHandler:
                     hv_file = self._get_hv_file_from_file(file_path)
                     
                     # Remove invalid files (this acts as a basic blacklist cleanup)
-                    if hv_file is None or not hv_file.is_valid():
+                    if hv_file is None or not hv_file.is_valid() or not Settings.is_static_range(file_path.name):
                         try:
                             file_size = Tools.get_file_size(file_path)
                             Tools.safe_delete_file(file_path)
