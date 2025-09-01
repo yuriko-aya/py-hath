@@ -95,7 +95,7 @@ def main():
         gunicorn_executable,
         '--bind', f'{host}:{port}',
         '--workers', '4',
-        '--worker-class', 'sync',
+        '--worker-class', 'gevent',
         '--timeout', '10',
         '--keep-alive', '2',
         '--max-requests', '1000',
