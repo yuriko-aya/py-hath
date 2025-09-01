@@ -442,8 +442,9 @@ def serve_file(file_id: str, additional: str, filename: str):
         logger.warning(f"File ID too short: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
     
-    subdirectory = file_id[:2]
-    file_path = os.path.join('cache', subdirectory, file_id)
+    l1dir = file_id[:2]
+    l2dir = file_id[2:4]
+    file_path = os.path.join('cache', l1dir, l2dir, file_id)
 
     # Response headers
     response_headers = {
@@ -542,9 +543,11 @@ def blacklist_process(timespan: int):
         logger.debug(f'Receive response {resp.text}')
         for line in resp.text.splitlines():
             if '-' in line:
-                subdir = line[2]
-                if os.path.exists(os.path.join('cache', subdir, line)):
-                    os.remove(os.path.join('cache', subdir, line))
+                l1dir = line[:2]
+                l2dir = line[2:4]
+
+                if os.path.exists(os.path.join('cache', l1dir, l2dir, line)):
+                    os.remove(os.path.join('cache', l1dir, l2dir, line))
                     delete_count += 1
 
     return delete_count
@@ -828,7 +831,7 @@ def cache_validation():
         if not static_range or len(static_range) == 0:
             logger.debug("No static range defined, skipping cache validation")
             return True  # Nothing to validate
-        files = [p for p in Path(cache_dir).glob("*/*") if p.is_file()]
+        files = [p for p in Path(cache_dir).glob("*/*/*") if p.is_file()]
         file_count = len(files)
         if not files or len(files) == 0:
             logger.debug("Cache is empty. Skipping validation")
