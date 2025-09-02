@@ -53,29 +53,25 @@ def main():
 
     # Import modules that depend on hath_config (now using singleton)
     import cache_manager
-    import notification_manager
+    import background_manager
     import event_manager
 
     # Update logging level based on configuration
     event_manager.update_logging_level()
 
     # Validate cache before starting workers
-    missing_db = False
-    db_path = db.db_path
-    if not os.path.exists(db_path):
-        logger.warning(f"Database {db_path} not found, creating a new one")
-        db.initialize_database()
-        missing_db = True
-    cache_manager.cache_validation(missing_db)
+    missing_db = db.initialize_database()
+ 
+    cache_manager.cache_validation(force_rescan=missing_db)
 
     # Start configuration file monitoring for the main process
     event_manager.start_config_file_monitor()
 
     # Set up shutdown handlers for graceful cleanup
-    notification_manager.setup_shutdown_handlers()
+    background_manager.setup_shutdown_handlers()
 
     # Start server startup notification and background tasks
-    notification_manager.notify_server_startup()
+    background_manager.start_background_task()
     
     # Now we can use the logger
     logger.info("Configuration initialized successfully")

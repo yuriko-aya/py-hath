@@ -53,24 +53,38 @@ def close_thread_connection():
 def initialize_database():
     """Initialize the database schema if it doesn't exist."""
     if os.path.exists(db_path):
-        return
-    
+        with get_db_connection() as conn:
+            # Check if tables exist
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name IN ('cache', 'cache_info');
+            """)
+            existing = {row[0] for row in cursor.fetchall()}
+            if {"cache", "cache_info"}.issubset(existing):
+                logger.debug("Database already initialized")
+                return False
+            
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.executescript('''
             CREATE TABLE IF NOT EXISTS cache (
                 static_range TEXT PRIMARY KEY,
                 count INTEGER DEFAULT 0,
                 last_access TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        # Create index for performance
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_last_access ON cache(last_access)
+            );
+
+            CREATE TABLE IF NOT EXISTS cache_info (
+                cache_count INTEGER DEFAULT 0,
+                cache_size INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_last_access ON cache(last_access);
         ''')
         logger.info("Database initialized successfully")
+        return True
 
 def get_oldest_static_range() -> Tuple[Optional[str], Optional[int]]:
     """Get the oldest static range by last access time."""
@@ -129,6 +143,10 @@ def update_file_count(static_range: str, removal: bool = False) -> bool:
                     SET count = MAX(count - 1, 0)
                     WHERE static_range = ?
                 ''', (static_range,))
+                cursor.execute('''
+                    UPDATE cache_info
+                    SET cache_count = MAX(cache_count - 1, 0)
+                ''')
             else:
                 # If adding file, increment count and update last_access
                 cursor.execute('''
@@ -137,9 +155,36 @@ def update_file_count(static_range: str, removal: bool = False) -> bool:
                     ON CONFLICT(static_range) 
                     DO UPDATE SET count = count + 1, last_access = CURRENT_TIMESTAMP
                 ''', (static_range,))
+                cursor.execute('''
+                    UPDATE cache_info
+                    SET cache_count = cache_count + 1
+                ''')
             return True
     except Exception as e:
         logger.error(f"Error updating file count for {static_range}: {e}")
+        return False
+
+def update_file_size(file_size: int, removal=False):
+    """Update total cache size"""
+    try:
+        if removal:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE cache_info
+                    SET cache_size = MAX(cache_size - ?, 0)
+                ''', (file_size,))
+                return True
+        else:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE cache
+                    SET cache_size = cache_size + ?
+                ''', (file_size,))
+                return True
+    except Exception as e:
+        logger.error(f"Error updating file size for: {e}")
         return False
 
 def clean_up_data() -> bool:
@@ -149,6 +194,7 @@ def clean_up_data() -> bool:
             cursor = conn.cursor()
             # Delete all entries (as per original implementation)
             cursor.execute('DELETE FROM cache')
+            cursor.execute('DELETE FROM cache_info')
             rows_deleted = cursor.rowcount
             logger.info(f"Cleaned up {rows_deleted} cache entries")
             return True
@@ -178,6 +224,19 @@ def remove_static_range(static_range: str) -> bool:
     except Exception as e:
         logger.error(f"Error removing static range {static_range}: {e}")
         return False
+
+def get_cache_size():
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT cache_size FROM cache_info')
+            row = cursor.fetchone()
+            if row:
+                return row[0] or 0
+            return 0
+    except Exception as e:
+        logger.error(f"Error getting cache size: {e}")
+        return 0
 
 def get_cache_stats() -> dict:
     """Get cache statistics for monitoring."""

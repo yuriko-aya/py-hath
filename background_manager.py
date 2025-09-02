@@ -2,6 +2,7 @@ import atexit
 import cache_manager
 import db_manager as db
 import event_manager
+import storage_manager
 import logging
 import socket
 import signal
@@ -9,12 +10,13 @@ import time
 import threading
 import hashlib
 import os
+import sys
 
 from config_singleton import get_hath_config
 
 logger = logging.getLogger(__name__)
 
-def notify_server_startup():
+def start_background_task():
     """Notify the server that the client has started - runs in background thread."""
     def wait_for_server_and_notify():
         # Wait for Flask server to be ready by checking if port is listening
@@ -49,9 +51,9 @@ def notify_server_startup():
                         deleted_blacklist = cache_manager.blacklist_process(259200)
                         logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files") 
 
-                        logger.debug("Startup notification successful, starting periodic still_alive notifications...")
-                        # Start periodic still_alive notifications
-                        start_periodic_still_alive()
+                        logger.debug("Startup notification successful, starting periodic task and notifications...")
+                        # Start periodic task and still_alive notifications
+                        start_periodic_task()
                     else:
                         logger.warning("Startup notification failed, not starting periodic notifications")
                     return
@@ -69,13 +71,14 @@ def notify_server_startup():
     thread.start()
 
 
-def start_periodic_still_alive():
-    """Start periodic still_alive notifications every 5 minutes."""
+def start_periodic_task():
+    """Start periodic task and still_alive notifications."""
     def periodic_still_alive():
         counter = 1
         while True:
             try:
-                time.sleep(120)  # Wait 2 minutes (120 seconds)
+                # 2 minutes of each iterations
+                time.sleep(120)
                 hath_config = get_hath_config()
                 if not hath_config or not hath_config.client_id or not hath_config.client_key:
                     logger.error("Configuration not available for still_alive notification")
@@ -87,7 +90,7 @@ def start_periodic_still_alive():
                 actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
                 
                 url_path = (
-                    f"/15/rpc?clientbuild=176&act=still_alive"
+                    f"/15/rpc?clientbuild={hath_config.client_build}&act=still_alive"
                     f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
                 )
                 
@@ -101,6 +104,13 @@ def start_periodic_still_alive():
                     deleted_blacklist = cache_manager.blacklist_process(43200)
                     logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files")
                 counter += 1
+
+                # Every 5 iteration (10 minutes), check if disk and cache size
+                if counter % 5 == 0:
+                    if not storage_manager.is_disk_ok():
+                        sys.exit(0)
+
+                    cache_manager.check_cache_size()
 
             except Exception as e:
                 logger.error(f"Failed to send still_alive notification: {e}")
@@ -168,7 +178,7 @@ def notify_client_stop():
         actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
         
         url_path = (
-            f"/15/rpc?clientbuild=176&act=client_stop"
+            f"/15/rpc?clientbuild={hath_config.client_build}&act=client_stop"
             f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
         )
         

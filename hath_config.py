@@ -28,6 +28,7 @@ class HathConfig:
         self.cert_file: Optional[str] = None
         self.key_file: Optional[str] = None
         self.is_server_ready: Optional[bool] = False
+        self.client_build: str = "176"  # Fixed client build version
         
         # RPC server IP list for failover (converted to standard IPv4 format)
         self.rpc_server_ips: list = []
@@ -226,7 +227,7 @@ class HathConfig:
         """Get server time from remote server."""
         try:
             local_time_before = int(time.time())
-            url_path = "/15/rpc?clientbuild=176&act=server_stat"
+            url_path = f'/15/rpc?clientbuild={self.client_build}&act=server_stat'
             response = self._make_rpc_request(url_path, timeout=10)
             
             # Parse key=value format
@@ -266,11 +267,11 @@ class HathConfig:
             current_acttime = self.get_current_acttime()
             if force_refresh:
                 actkey = self.generate_actkey("client_settings")
-                url_path = (f"/15/rpc?clientbuild=176&act=client_settings"
+                url_path = (f"/15/rpc?clientbuild={self.client_build}&act=client_settings"
                         f"&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             else:
                 actkey = self.generate_actkey("client_login")
-                url_path = (f"/15/rpc?clientbuild=176&act=client_login"
+                url_path = (f"/15/rpc?clientbuild={self.client_build}&act=client_login"
                         f"&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
 
             response = self._make_rpc_request(url_path, timeout=10)
@@ -486,7 +487,7 @@ class HathConfig:
         try:
             current_acttime = self.get_current_acttime()
             actkey = self.generate_actkey("get_cert")
-            url_path = (f"/15/rpc?clientbuild=176&act=get_cert"
+            url_path = (f"/15/rpc?clientbuild={self.client_build}&act=get_cert"
                        f"&add=&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             
             logger.debug("Downloading new SSL certificate...")
@@ -591,7 +592,7 @@ class HathConfig:
         try:
             current_acttime = self.get_current_acttime()
             actkey = self.generate_actkey("client_start")
-            url_path = (f"/15/rpc?clientbuild=176&act=client_start"
+            url_path = (f"/15/rpc?clientbuild={self.client_build}&act=client_start"
                        f"&add=&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             
             logger.debug("Notifying server that client has started...")

@@ -16,7 +16,7 @@ import atexit
 from pathlib import Path
 
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, g, jsonify, request, Response, request, send_file, redirect, url_for
+from flask import Flask, g, jsonify, request, Response, send_file, redirect, url_for
 from hath_config import HathConfig
 from config_singleton import get_hath_config, initialize_config
 from io import BytesIO
@@ -143,6 +143,7 @@ def parse_additional_params(additional: str) -> dict:
 
 @app.route('/h/<file_id>/<additional>/<filename>')
 def serve_file(file_id: str, additional: str, filename: str):
+    import cache_manager
     """Serve cached files with authentication."""
     # Parse additional parameters
     params = parse_additional_params(additional)
@@ -199,61 +200,39 @@ def serve_file(file_id: str, additional: str, filename: str):
     }
 
     # Determine content type
-    if 'wbp' in filename:
+    if 'wbp' in filename or 'wbp' in file_id:
         content_type = 'image/webp'
     else:
         content_type, _ = mimetypes.guess_type(filename)
         if not content_type:
             content_type = 'application/octet-stream'
 
-    def generate_and_cache(file_resp):
-        with open(file_path, 'wb') as cache_file:
-            for chunk in file_resp.iter_content(chunk_size=8192):
-                if chunk:
-                    cache_file.write(chunk)
-                    yield chunk
-        logger.debug(f"File cached at: {file_path}")
-
     if not os.path.exists(file_path) or not os.path.isfile(file_path):
         logger.debug(f"File not found locally: {file_path}, attempting remote fetch...")
         if os.path.exists(file_path) and os.path.isdir(file_path):
             shutil.rmtree(file_path)
         # Prepare remote fetch URL
-        import cache_manager
         success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
         if success:
             # Save to cache and stream to client simultaneously
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-           
             logger.debug(f"Streaming file: {file_id} as {content_type}")
-            # Update last access time for cache tracking
-            static_name = file_id[:4]
-            db.update_last_access(static_name, new_file=True)
             return Response(
-                generate_and_cache(file_resp),
+                cache_manager.generate_and_cache(file_path, file_id, file_resp),
                 mimetype=content_type,
                 headers=response_headers
             )
         else:
             return "File not found", 404, {'Content-Type': 'text/plain'}
 
-    import cache_manager
     if not cache_manager.verify_file_integrity(file_path, file_id):
         os.remove(file_path)
         # Prepare remote fetch URL
         success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
         if success:
             # Save to cache and stream to client simultaneously
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
             logger.debug(f"Streaming file: {file_id} as {content_type}")
-            
-            # Update last access time for cache tracking
-            static_name = file_id[:4]
-            db.update_last_access(static_name, new_file=True)
-            
             return Response(
-                generate_and_cache(file_resp),
+                cache_manager.generate_and_cache(file_path, file_id, file_resp),
                 mimetype=content_type,
                 headers=response_headers
             )
@@ -268,10 +247,8 @@ def serve_file(file_id: str, additional: str, filename: str):
             static_name = file_id[:4]
             db.update_last_access(static_name)
             
-            with open(file_path, 'rb') as img_file:
-                img_data = img_file.read()
             return Response(
-                img_data,
+                cache_manager.serve_from_file(file_path, file_id),
                 mimetype=content_type,
                 headers=response_headers
             )
@@ -581,15 +558,15 @@ def create_app():
         cache_manager.cache_validation()
         
         # Start notification in background - it will wait for server to be ready
-        import notification_manager
+        import background_manager
         # do not notify master
-        # notification_manager.notify_server_startup()
+        # background_manager.start_background_task()
 
         # Start configuration file monitoring
         event_manager.start_config_file_monitor()
 
         # Setup shutdown handlers for graceful shutdown
-        notification_manager.setup_shutdown_handlers()
+        background_manager.setup_shutdown_handlers()
     else:
         logger.info(f"Process {os.getpid()}: Using cached configuration from main process")
 
