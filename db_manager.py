@@ -52,23 +52,33 @@ def close_thread_connection():
 
 def initialize_database():
     """Initialize the database schema if it doesn't exist."""
-    if os.path.exists(db_path):
-        with get_db_connection() as conn:
-            # Check if tables exist
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT name FROM sqlite_master
-                WHERE type='table' AND name IN ('cache', 'cache_info');
-            """)
-            existing = {row[0] for row in cursor.fetchall()}
-            if {"cache", "cache_info"}.issubset(existing):
-                logger.debug("Database already initialized")
-                return False
-            
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
-    with get_db_connection() as conn:
+    # Use direct SQLite connection for initialization (runs only once at startup)
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        # Enable WAL mode for better concurrency
+        conn.execute('PRAGMA journal_mode=WAL')
+        # Enable foreign keys
+        conn.execute('PRAGMA foreign_keys=ON')
+        
+        # Check if tables exist
         cursor = conn.cursor()
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name IN ('cache', 'cache_info');
+        """)
+        existing = {row[0] for row in cursor.fetchall()}
+        if {"cache", "cache_info"}.issubset(existing):
+            cursor.execute("""SELECT cache_count FROM cache_info""")
+            cache_info = cursor.fetchone()
+            if cache_info is not None:
+                logger.debug('Database already initialized')
+                return False
+            else:
+                logger.warning('Database tables exist but cache_info is missing data, reinitializing')
+            
+        # Create tables
         cursor.executescript('''
             CREATE TABLE IF NOT EXISTS cache (
                 static_range TEXT PRIMARY KEY,
@@ -83,8 +93,12 @@ def initialize_database():
 
             CREATE INDEX IF NOT EXISTS idx_last_access ON cache(last_access);
         ''')
+        conn.commit()
         logger.info("Database initialized successfully")
         return True
+        
+    finally:
+        conn.close()
 
 def get_oldest_static_range() -> Tuple[Optional[str], Optional[int]]:
     """Get the oldest static range by last access time."""
@@ -179,7 +193,7 @@ def update_file_size(file_size: int, removal=False):
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    UPDATE cache
+                    UPDATE cache_info
                     SET cache_size = cache_size + ?
                 ''', (file_size,))
                 return True
