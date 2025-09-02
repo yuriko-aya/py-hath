@@ -15,10 +15,17 @@ Features:
 - Proper certificate handling
 - Production-ready configuration
 """
+import app
 import os
 import sys
 import logging
 import subprocess
+import atexit
+import signal
+import threading
+import time
+import db_manager as db
+from config_singleton import initialize_config
 
 def main():
     # Check necessary directory and create it if not exists
@@ -26,18 +33,52 @@ def main():
     os.makedirs('cache', exist_ok=True)
     os.makedirs('data', exist_ok=True)
 
-    # Import and create the application to initialize configuration
-    from app import create_app
+    # Initialize logging first (before any imports)
+    from app import setup_file_logging
+    setup_file_logging()
     
-    # Create the app first to initialize logging and hath_config
-    app = create_app()
-    
-    # Now import hath_config after it's been initialized by create_app
-    from app import hath_config
-    
-    # Now we can use the app's logger
     logger = logging.getLogger(__name__)
-    logger.info("Creating Flask application for Gunicorn deployment...")
+    logger.info("Initializing Hentai@Home client for Gunicorn deployment...")
+
+    # Initialize hath_config here in the main process before starting workers
+    from hath_config import HathConfig
+    hath_config = HathConfig()
+    
+    if not hath_config.initialize():
+        logger.error("Failed to initialize configuration")
+        sys.exit(1)
+
+    # Initialize the configuration singleton for workers to access
+    initialize_config(hath_config)
+
+    # Import modules that depend on hath_config (now using singleton)
+    import cache_manager
+    import notification_manager
+    import event_manager
+
+    # Update logging level based on configuration
+    event_manager.update_logging_level()
+
+    # Validate cache before starting workers
+    missing_db = False
+    db_path = db.db_path
+    if not os.path.exists(db_path):
+        logger.warning(f"Database {db_path} not found, creating a new one")
+        db.initialize_database()
+        missing_db = True
+    cache_manager.cache_validation(missing_db)
+
+    # Start configuration file monitoring for the main process
+    event_manager.start_config_file_monitor()
+
+    # Set up shutdown handlers for graceful cleanup
+    notification_manager.setup_shutdown_handlers()
+
+    # Start server startup notification and background tasks
+    notification_manager.notify_server_startup()
+    
+    # Now we can use the logger
+    logger.info("Configuration initialized successfully")
     
     # Get configuration from hath_config
     if not hath_config:
@@ -108,10 +149,10 @@ def main():
         '--ciphers', 'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS',
         'wsgi:application'
     ]
-    
+
     try:
         logger.info("Starting HTTPS server with Gunicorn (SSL required for Hentai@Home)...")
-        logger.info(f"Command: {' '.join(gunicorn_cmd)}")
+        logger.debug(f"Command: {' '.join(gunicorn_cmd)}")
         
         # Execute Gunicorn
         subprocess.run(gunicorn_cmd, check=True)

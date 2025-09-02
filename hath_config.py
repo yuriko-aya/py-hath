@@ -336,6 +336,8 @@ class HathConfig:
             cache_file = os.path.join(self.data_dir, '.hath_config_cache.json')
             
             cache_data = {
+                'client_id': self.client_id,
+                'client_key': self.client_key,
                 'config': dict(self.config),
                 'rpc_server_ips': list(self.rpc_server_ips),
                 'static_range': list(self.static_range),
@@ -370,21 +372,10 @@ class HathConfig:
                         
             with open(cache_file, 'r') as f:
                 cache_data = json.load(f)
-            
-            # Check if the process that created the cache is still alive
-            creator_pid = cache_data.get('process_pid')
-            if creator_pid:
-                try:
-                    os.kill(creator_pid, 0)  # Check if process exists
-                except (OSError, ProcessLookupError):
-                    logger.debug("Config cache creator process no longer exists, removing cache")
-                    try:
-                        os.remove(cache_file)
-                    except OSError:
-                        pass
-                    return False
-            
+                        
             # Restore configuration
+            self.client_id = cache_data.get('client_id')
+            self.client_key = cache_data.get('client_key')
             self.config = dict(cache_data.get('config', {}))
             self.rpc_server_ips = list(cache_data.get('rpc_server_ips', []))
             self.static_range = list(cache_data.get('static_range', []))
@@ -420,7 +411,8 @@ class HathConfig:
             logger.error(f"Error cleaning up config cache: {e}")
     
     def _check_certificate_validity(self) -> bool:
-        """Check if existing certificate is valid and has more than 7 days until expiration."""
+        """Check if existing certificate is valid and has more than 3 days until expiration,
+        and is not more than one week old."""
         try:
             cert_path = os.path.join(self.data_dir, "client.crt")
             key_path = os.path.join(self.data_dir, "client.key")
@@ -428,6 +420,20 @@ class HathConfig:
             # Check if both files exist
             if not (os.path.exists(cert_path) and os.path.exists(key_path)):
                 logger.debug("Certificate files not found")
+                return False
+
+            # Check certificate age (file modification time)
+            cert_stat = os.stat(cert_path)
+            cert_mtime = datetime.fromtimestamp(cert_stat.st_mtime)
+            current_time = datetime.now()
+            age_delta = current_time - cert_mtime
+            
+            logger.debug(f"Certificate file last modified: {cert_mtime}")
+            logger.debug(f"Certificate age: {age_delta.days} days, {age_delta.seconds // 3600} hours")
+            
+            # If certificate is more than 7 days old, download new one
+            if age_delta.days >= 7:
+                logger.debug("Certificate is more than one week old, will download new one")
                 return False
             
             # Read and parse the certificate
@@ -444,13 +450,13 @@ class HathConfig:
             logger.debug(f"Certificate expires on: {expiration_date}")
             logger.debug(f"Days until expiration: {days_until_expiration}")
             
-            if days_until_expiration > 7:
-                logger.debug("Certificate is valid and has more than 7 days until expiration")
+            if days_until_expiration > 3:
+                logger.debug("Certificate is valid, not too old, and has more than 3 days until expiration")
                 self.cert_file = cert_path
                 self.key_file = key_path
                 return True
             else:
-                logger.debug("Certificate expires within 7 days, will download new one")
+                logger.debug("Certificate expires within 3 days, will download new one")
                 return False
                 
         except Exception as e:
@@ -459,6 +465,12 @@ class HathConfig:
     
     def get_ssl_certificate(self, force_refresh: bool = False) -> bool:
         """Get SSL certificate from remote server.
+        
+        The certificate will be downloaded if:
+        - No certificate exists
+        - Existing certificate expires within 3 days
+        - Existing certificate is more than one week old
+        - force_refresh is True
         
         Args:
             force_refresh: If True, skip validity check and force download new certificate
