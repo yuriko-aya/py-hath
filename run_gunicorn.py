@@ -138,7 +138,7 @@ def main():
         '--workers', '4',
         '--worker-class', 'gevent',
         '--timeout', '10',
-        '--keep-alive', '2',
+        '--keep-alive', '0',
         '--max-requests', '1000',
         '--max-requests-jitter', '100',
         '--access-logfile', 'log/gunicorn_access.log',
