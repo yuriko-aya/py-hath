@@ -26,7 +26,7 @@ import threading
 import time
 import db_manager as db
 import log_manager
-from config_singleton import initialize_config
+
 
 def main():
     # Check necessary directory and create it if not exists
@@ -52,6 +52,7 @@ def main():
         sys.exit(1)
 
     # Initialize the configuration singleton for workers to access
+    from config_singleton import initialize_config
     initialize_config(hath_config)
 
     # Import modules that depend on hath_config (now using singleton)

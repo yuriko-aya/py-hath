@@ -97,7 +97,7 @@ def start_periodic_task():
                 
                 logger.info("Sending periodic still_alive notification...")
                 response = rpc_manager._make_rpc_request(url_path, timeout=10)
-                
+
                 logger.debug(f"Still_alive notification sent successfully: {response.text.strip()}")
 
                 # Every 540 iterations (approximately every 18 hours), run blacklist cleanup
@@ -163,9 +163,9 @@ def notify_client_stop():
             f"/15/rpc?clientbuild={hath_config.client_build}&act=client_stop"
             f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
         )
-        
+
         response = rpc_manager._make_rpc_request(url_path, timeout=10)
-        
+
         logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
         
         # Clean up config cache when shutting down

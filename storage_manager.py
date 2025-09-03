@@ -6,6 +6,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MIN_FREE_BYTES = 1073741824
+
 def is_disk_ok():
     '''
     Check if there is enough free disk space in the 'cache' directory,
@@ -20,10 +22,10 @@ def is_disk_ok():
     config_min_free = hath_config.config.get('diskremaining_bytes')
 
     try:
-        min_free = int(config_min_free) if config_min_free is not None else 1073741824  # 1GB default
+        min_free = int(config_min_free) if config_min_free is not None else DEFAULT_MIN_FREE_BYTES
     except (TypeError, ValueError):
-        logger.error(f'Invalid diskremaining_bytes value in config: {config_min_free!r}; using default (1GB)')
-        min_free = 1073741824  # fallback to 1GB
+        logger.error(f'Invalid diskremaining_bytes value in config: {config_min_free!r}; using default ({DEFAULT_MIN_FREE_BYTES} bytes)')
+        min_free = DEFAULT_MIN_FREE_BYTES
 
     cache_dir = 'cache'
     if not os.path.exists(cache_dir):

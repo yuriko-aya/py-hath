@@ -3,13 +3,12 @@ import logging
 import time
 
 logger = logging.getLogger(__name__)
-from config_singleton import get_hath_config
 
 requests_headers = {
     'User-Agent': 'Hentai@Home Python Client 0.2'
 }
 
-def _make_rpc_request(url_path: str, timeout: int = 10) -> requests.Response:
+def _make_rpc_request(url_path: str, timeout: int = 10, configuration = None) -> requests.Response:
     """Make RPC request with failover logic.
 
     Args:
@@ -22,7 +21,12 @@ def _make_rpc_request(url_path: str, timeout: int = 10) -> requests.Response:
     Raises:
         requests.RequestException: If all servers fail
     """
-    hath_config = get_hath_config()
+    if configuration is not None:
+        hath_config = configuration
+    else:
+        from config_singleton import get_hath_config
+        hath_config = get_hath_config()
+
     if not hath_config:
         raise RuntimeError("HathConfig is not initialized") 
 

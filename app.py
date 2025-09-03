@@ -167,7 +167,10 @@ def serve_file(file_id: str, additional: str, filename: str):
         success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
         if success and file_resp:
             # Save to cache and stream to client simultaneously
-            file_size = len(file_resp.content)
+            if 'Content-Length' in file_resp.headers:
+                file_size = int(file_resp.headers['Content-Length'])
+            else:
+                file_size = len(file_resp.content)
             file_size_kb = file_size / 1024
             logger.debug(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
             return Response(
@@ -184,7 +187,10 @@ def serve_file(file_id: str, additional: str, filename: str):
         success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
         if success and file_resp:
             # Save to cache and stream to client simultaneously
-            file_size = len(file_resp.content)
+            if 'Content-Length' in file_resp.headers:
+                file_size = int(file_resp.headers['Content-Length'])
+            else:
+                file_size = len(file_resp.content)
             file_size_kb = file_size / 1024
             logger.info(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
 

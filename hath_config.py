@@ -155,7 +155,7 @@ class HathConfig:
         try:
             local_time_before = int(time.time())
             url_path = f'/15/rpc?clientbuild={self.client_build}&act=server_stat'
-            response = rpc_manager._make_rpc_request(url_path, timeout=10)
+            response = rpc_manager._make_rpc_request(url_path, timeout=10, configuration=self)
             
             # Parse key=value format
             for line in response.text.strip().split('\n'):
@@ -201,7 +201,7 @@ class HathConfig:
                 url_path = (f"/15/rpc?clientbuild={self.client_build}&act=client_login"
                         f"&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
 
-            response = rpc_manager._make_rpc_request(url_path, timeout=10)
+            response = rpc_manager._make_rpc_request(url_path, timeout=10, configuration=self)
             
             response_text = response.text.strip()
             
@@ -295,8 +295,8 @@ class HathConfig:
             cache_file = os.path.join(self.data_dir, '.hath_config_cache.json')
             
             if not os.path.exists(cache_file):
-                logger.error("Config file is gone. recreating...")
-                self.save_config_cache()
+                logger.warning("Cannot find the config file. May be just started?")
+                return False
 
             with open(cache_file, 'r') as f:
                 cache_data = json.load(f)
@@ -418,7 +418,7 @@ class HathConfig:
                        f"&add=&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             
             logger.debug("Downloading new SSL certificate...")
-            response = rpc_manager._make_rpc_request(url_path, timeout=30)
+            response = rpc_manager._make_rpc_request(url_path, timeout=30, configuration=self)
             
             # Save PKCS#12 certificate
             p12_path = os.path.join(self.data_dir, "client.p12")
@@ -523,7 +523,7 @@ class HathConfig:
                        f"&add=&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             
             logger.debug("Notifying server that client has started...")
-            response = rpc_manager._make_rpc_request(url_path, timeout=60)
+            response = rpc_manager._make_rpc_request(url_path, timeout=60, configuration=self)
             
             logger.debug("Server notification sent successfully")
             logger.debug(f"Server response: {response.text.strip()}")
