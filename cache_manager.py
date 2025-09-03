@@ -5,12 +5,16 @@ import shutil
 import hashlib
 import requests
 import time
+import rpc_manager
 
 from config_singleton import get_hath_config
 from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+requests_headers = {
+    'User-Agent': 'Hentai@Home Python Client 0.2'
+}
 
 def delete_static_range(static_range: str):
     '''Delete static range and all file inside it'''
@@ -129,7 +133,7 @@ def blacklist_process(timespan: int):
         f"/15/rpc?clientbuild={hath_config.client_build}&act=get_blacklist"
         f"&add={add}&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
     )
-    resp = hath_config._make_rpc_request(url_path, timeout=20)
+    resp = rpc_manager._make_rpc_request(url_path, timeout=20)
     delete_count = 0
     if 'OK' in resp.text:
         logger.debug(f'Receive response {resp.text}')
@@ -156,7 +160,7 @@ def verify_file_integrity(file_path:str, file_id:str):
     else:
         # If no dash, assume the whole file_id is the hash
         expected_hash = file_id
-    
+
     try:
         sha1 = hashlib.sha1()
         with open(file_path, 'rb') as f:
@@ -194,7 +198,7 @@ def fetch_remote_file(fileindex: str, xres: str, file_id: str):
             f"&add={add}&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
         )
         logger.debug(f"Fetching file location via RPC: {url_path}")
-        resp = hath_config._make_rpc_request(url_path, timeout=20)
+        resp = rpc_manager._make_rpc_request(url_path, timeout=20)
         # Find the first line starting with http
         urls = []
         for line in resp.text.splitlines():
@@ -208,7 +212,7 @@ def fetch_remote_file(fileindex: str, xres: str, file_id: str):
             for attempt in range(1, 4):  # up to 3 retries per URL
                 try:
                     logger.debug(f"Attempt {attempt} - Downloading file from: {url}")
-                    file_resp = requests.get(url, timeout=10, stream=True)
+                    file_resp = requests.get(url, headers=requests_headers, timeout=10, stream=True)
                     file_resp.raise_for_status()
                     logger.debug(f"Successfully downloaded from {url}")
                     return True, file_resp  # ✅ stop immediately after success
@@ -244,24 +248,33 @@ def get_throttled_speed():
 
     return sleep_time
 
-def generate_and_cache(file_path, file_id, file_resp):
+def generate_and_cache(file_path, file_id, file_resp, file_size):
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     sleep_time = get_throttled_speed()
     # Update last access time for cache tracking
     static_name = file_id[:4]
-    with open(file_path, 'wb') as cache_file:
-        for chunk in file_resp.iter_content(chunk_size=8192):
-            if chunk:
-                cache_file.write(chunk)
-                yield chunk
-                time.sleep(sleep_time)
-
-    db.update_last_access(static_name, new_file=True)
-    db.update_file_size(len(file_resp.content))
-    logger.debug(f"File cached at: {file_path}")
+    success = True
+    try:
+        with open(file_path, 'wb') as cache_file:
+            for chunk in file_resp.iter_content(chunk_size=8192):
+                if chunk:
+                    cache_file.write(chunk)
+                    yield chunk
+                    time.sleep(sleep_time)
+    except Exception as e:
+        logger.error(f"Error generating and caching file {file_path}: {e}")
+        yield b'' # Yield empty bytes on error to avoid breaking the response
+        success = False
+    finally:
+        if success:
+            logger.debug(f"File cached at: {file_path}")
+            db.update_last_access(static_name, new_file=True)
+            db.update_file_size(file_size)
 
 def serve_from_file(file_path, file_id):
     sleep_time = get_throttled_speed()
+    static_name = file_id[:4]
+
     try:
         with open(file_path, 'rb') as img_file:
             while chunk := img_file.read(8192):
@@ -270,6 +283,8 @@ def serve_from_file(file_path, file_id):
     except Exception as e:
         logger.error(f"Error serving file {file_path}: {e}")
         yield b''  # Yield empty bytes on error to avoid breaking the response
+    finally:
+        db.update_last_access(static_name)
 
 def prune_cache():
     '''Prune oldest cache due size limit'''

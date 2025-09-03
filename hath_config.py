@@ -3,6 +3,9 @@ import requests
 import time
 import hashlib
 import ipaddress
+import sys
+import rpc_manager
+
 from datetime import datetime, timedelta
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
@@ -17,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class HathConfig:
     """Configuration handler for Hentai@Home client."""
-    
+
     def __init__(self, data_dir: str = "data"):
         self.data_dir = data_dir
         self.client_id: Optional[str] = None
@@ -79,90 +82,14 @@ class HathConfig:
         if self.rpc_server_ips:
             return self.rpc_server_ips[0]
         return self.rpc_fallback_domain
-    
+
     def _handle_rpc_failure(self) -> None:
         """Handle RPC failure by moving the failed IP to the end of the list."""
         if self.rpc_server_ips and len(self.rpc_server_ips) > 1:
             failed_ip = self.rpc_server_ips.pop(0)
             self.rpc_server_ips.append(failed_ip)
             logger.debug(f"Moved failed RPC server {failed_ip} to end of list. Next server: {self.rpc_server_ips[0]}")
-    
-    def _make_rpc_request(self, url_path: str, timeout: int = 10) -> requests.Response:
-        """Make RPC request with failover logic.
-        
-        Args:
-            url_path: The URL path including query parameters (e.g., "/15/rpc?act=server_stat")
-            timeout: Request timeout in seconds
             
-        Returns:
-            requests.Response object
-            
-        Raises:
-            requests.RequestException: If all servers fail
-        """
-        # For server_stat and server_login, always use the fallback domain
-        if 'act=server_stat' in url_path or 'act=client_login' in url_path:
-            url = f"http://{self.rpc_fallback_domain}{url_path}"
-            logger.debug(f"Making RPC request to fallback domain: {url}")
-            response = requests.get(url, timeout=timeout)
-            response.raise_for_status()
-            return response
-        
-        # For other requests, use the dynamic IP list with failover
-        if not self.rpc_server_ips:
-            # No IP list available, use fallback domain
-            url = f"http://{self.rpc_fallback_domain}{url_path}"
-            logger.debug(f"No RPC IP list available, using fallback domain: {url}")
-            response = requests.get(url, timeout=timeout)
-            response.raise_for_status()
-            return response
-        
-        # Try each IP in the list
-        original_list = self.rpc_server_ips.copy()
-        ip_attempts = 0
-        max_ip_attempts = len(self.rpc_server_ips)
-        
-        while ip_attempts < max_ip_attempts:
-            current_host = self._get_rpc_host()
-            url = f"http://{current_host}{url_path}"
-            
-            # Try the current IP up to 3 times
-            retry_attempts = 0
-            max_retries = 3
-            
-            while retry_attempts < max_retries:
-                try:
-                    if retry_attempts == 0:
-                        logger.debug(f"Making RPC request to: {url}")
-                    else:
-                        logger.debug(f"Retrying RPC request to {current_host} (attempt {retry_attempts + 1}/{max_retries})")
-                    
-                    response = requests.get(url, timeout=timeout)
-                    response.raise_for_status()
-                    return response
-                    
-                except Exception as e:
-                    retry_attempts += 1
-                    if retry_attempts < max_retries:
-                        logger.warning(f"RPC request failed to {current_host} (attempt {retry_attempts}/{max_retries}): {e}")
-                        time.sleep(1)  # Brief delay between retries
-                    else:
-                        logger.warning(f"RPC request failed to {current_host} after {max_retries} attempts: {e}")
-            
-            # All retries for this IP failed, move to next IP
-            self._handle_rpc_failure()
-            ip_attempts += 1
-            
-            if ip_attempts < max_ip_attempts:
-                logger.debug(f"Moving to next RPC server: {self._get_rpc_host()}")
-        
-        # All IPs failed, try fallback domain as last resort
-        logger.error("All RPC server IPs failed, trying fallback domain as last resort")
-        url = f"http://{self.rpc_fallback_domain}{url_path}"
-        response = requests.get(url, timeout=timeout)
-        response.raise_for_status()
-        return response
-        
     def read_client_credentials(self) -> bool:
         """Read client_id and client_key from data/client_login file."""
         client_login_path = os.path.join(self.data_dir, "client_login")
@@ -222,13 +149,13 @@ class HathConfig:
         except Exception as e:
             logger.error(f"Error reading client credentials: {e}")
             return False
-    
+
     def get_server_time(self) -> bool:
         """Get server time from remote server."""
         try:
             local_time_before = int(time.time())
             url_path = f'/15/rpc?clientbuild={self.client_build}&act=server_stat'
-            response = self._make_rpc_request(url_path, timeout=10)
+            response = rpc_manager._make_rpc_request(url_path, timeout=10)
             
             # Parse key=value format
             for line in response.text.strip().split('\n'):
@@ -248,7 +175,7 @@ class HathConfig:
         except Exception as e:
             logger.error(f"Error getting server time: {e}")
             return False
-    
+
     def get_current_acttime(self) -> int:
         """Get current acttime (local time + time difference)."""
         current_local_time = int(time.time())
@@ -274,7 +201,7 @@ class HathConfig:
                 url_path = (f"/15/rpc?clientbuild={self.client_build}&act=client_login"
                         f"&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
 
-            response = self._make_rpc_request(url_path, timeout=10)
+            response = rpc_manager._make_rpc_request(url_path, timeout=10)
             
             response_text = response.text.strip()
             
@@ -368,9 +295,9 @@ class HathConfig:
             cache_file = os.path.join(self.data_dir, '.hath_config_cache.json')
             
             if not os.path.exists(cache_file):
-                logger.debug("No config cache file found")
-                return False
-                        
+                logger.error("Config file is gone. recreating...")
+                self.save_config_cache()
+
             with open(cache_file, 'r') as f:
                 cache_data = json.load(f)
                         
@@ -410,7 +337,7 @@ class HathConfig:
                 logger.debug("Configuration cache file cleaned up")
         except Exception as e:
             logger.error(f"Error cleaning up config cache: {e}")
-    
+
     def _check_certificate_validity(self) -> bool:
         """Check if existing certificate is valid and has more than 3 days until expiration,
         and is not more than one week old."""
@@ -463,7 +390,7 @@ class HathConfig:
         except Exception as e:
             logger.error(f"Error checking certificate validity: {e}")
             return False
-    
+
     def get_ssl_certificate(self, force_refresh: bool = False) -> bool:
         """Get SSL certificate from remote server.
         
@@ -491,7 +418,7 @@ class HathConfig:
                        f"&add=&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             
             logger.debug("Downloading new SSL certificate...")
-            response = self._make_rpc_request(url_path, timeout=30)
+            response = rpc_manager._make_rpc_request(url_path, timeout=30)
             
             # Save PKCS#12 certificate
             p12_path = os.path.join(self.data_dir, "client.p12")
@@ -507,7 +434,7 @@ class HathConfig:
         except Exception as e:
             logger.error(f"Error getting SSL certificate: {e}")
             return False
-    
+
     def _convert_p12_to_pem(self, p12_path: str) -> None:
         """Convert PKCS#12 certificate to separate PEM files with full certificate chain."""
         try:
@@ -560,7 +487,7 @@ class HathConfig:
         except Exception as e:
             logger.error(f"Error converting PKCS#12 certificate: {e}")
             raise
-    
+
     def initialize(self) -> bool:
         """Initialize the configuration by performing all required steps."""
         logger.debug("Initializing Hentai@Home client configuration...")
@@ -586,7 +513,7 @@ class HathConfig:
         
         logger.debug("Configuration initialization completed successfully")
         return True
-    
+
     def notify_client_start(self) -> bool:
         """Notify the server that the client has started."""
         try:
@@ -596,7 +523,7 @@ class HathConfig:
                        f"&add=&cid={self.client_id}&acttime={current_acttime}&actkey={actkey}")
             
             logger.debug("Notifying server that client has started...")
-            response = self._make_rpc_request(url_path, timeout=60)
+            response = rpc_manager._make_rpc_request(url_path, timeout=60)
             
             logger.debug("Server notification sent successfully")
             logger.debug(f"Server response: {response.text.strip()}")
@@ -605,7 +532,7 @@ class HathConfig:
         except Exception as e:
             logger.error(f"Error notifying server of client start: {e}")
             return False
-    
+
     def get_flask_config(self) -> Dict[str, Any]:
         """Get Flask configuration from the loaded config."""
         # Always use 0.0.0.0 as host

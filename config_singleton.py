@@ -3,6 +3,12 @@ Configuration Singleton Module
 
 This module provides a thread-safe singleton pattern for managing the HathConfig instance
 across all modules, eliminating circular import issues.
+
+The singleton supports:
+- Initial configuration loading from cache files
+- Dynamic configuration reloading when cache files change (triggered by /servercmd/refresh_settings)
+- Thread-safe access across multiple worker processes
+- Automatic failover to cache loading if main process configuration is unavailable
 """
 import threading
 import logging
@@ -12,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 class ConfigSingleton:
     """Thread-safe singleton for HathConfig instance."""
-    
+
     _instance: Optional['ConfigSingleton'] = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
@@ -24,7 +30,7 @@ class ConfigSingleton:
                     cls._instance._hath_config = None
                     cls._instance._initialized = False
         return cls._instance
-    
+
     def initialize(self, hath_config) -> None:
         """Initialize with HathConfig instance."""
         with self._lock:
@@ -34,14 +40,14 @@ class ConfigSingleton:
             # Save configuration to cache for worker processes
             if hasattr(hath_config, 'save_config_cache'):
                 hath_config.save_config_cache()
-    
+
     def get_config(self):
         """Get the HathConfig instance."""
         # If not initialized, try to load from cache (for worker processes)
         if not self._initialized or self._hath_config is None:
             self._load_from_cache()
         return self._hath_config
-    
+
     def _load_from_cache(self) -> None:
         """Load configuration from cache file (for worker processes)."""
         with self._lock:
@@ -62,11 +68,39 @@ class ConfigSingleton:
                     
             except Exception as e:
                 logger.error(f"Failed to load configuration from cache: {e}")
-    
+
+    def force_reload_from_cache(self) -> bool:
+        """Force reload configuration from cache file (for dynamic config updates)."""
+        with self._lock:
+            try:
+                from hath_config import HathConfig
+                hath_config = HathConfig()
+                
+                # Force reload from cache
+                if hath_config.load_config_cache():
+                    old_config = self._hath_config
+                    self._hath_config = hath_config
+                    self._initialized = True
+                    
+                    # Log the reload
+                    if old_config:
+                        logger.debug("Configuration forcefully reloaded from cache (config update detected)")
+                    else:
+                        logger.debug("Configuration loaded from cache for the first time")
+                    
+                    return True
+                else:
+                    logger.warning("Failed to force reload configuration from cache")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Failed to force reload configuration from cache: {e}")
+                return False
+
     def is_initialized(self) -> bool:
         """Check if configuration is initialized."""
         return self._initialized and self._hath_config is not None
-    
+
     def reset(self) -> None:
         """Reset the configuration (useful for testing)."""
         with self._lock:
@@ -87,3 +121,7 @@ def initialize_config(hath_config) -> None:
 def is_config_ready() -> bool:
     """Check if configuration is ready to use."""
     return config_manager.is_initialized()
+
+def force_reload_config() -> bool:
+    """Force reload configuration from cache file."""
+    return config_manager.force_reload_from_cache()

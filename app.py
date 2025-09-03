@@ -1,89 +1,32 @@
-import db_manager as db
 import logging
-import threading
-import time
-import socket
 import hashlib
+import time
 import random
 import requests
 import os
 import mimetypes
 import shutil
-import signal
 import sys
-import atexit
 
 from pathlib import Path
-
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, g, jsonify, request, Response, send_file, redirect, url_for
-from hath_config import HathConfig
 from config_singleton import get_hath_config, initialize_config
-from io import BytesIO
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from log_manager import setup_file_logging
 
-# Configure logging
-import logging.handlers
-from datetime import datetime
-
-# Disable debug logging for noisy third-party libraries
-# Temporarily enable watchdog debug logging to troubleshoot
-logging.getLogger('watchdog').setLevel(logging.WARNING)
-logging.getLogger('urllib3').setLevel(logging.WARNING)
-logging.getLogger('requests').setLevel(logging.WARNING)
-
-# Ensure log directory exists
-log_dir = 'log'
-os.makedirs(log_dir, exist_ok=True)
-
-# Create formatters
-detailed_formatter = logging.Formatter(
-    '%(asctime)s - %(name)s [%(process)d] - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
-# Create file handlers
-def setup_file_logging():
-    """Setup file-based logging handlers."""
-    
-    # Get root logger and clear any existing handlers
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()  # Remove any default handlers
-    root_logger.setLevel(logging.DEBUG)
-    
-    # Main application log - no rotation (handled by system logrotate)
-    app_handler = logging.FileHandler(
-        filename=os.path.join(log_dir, 'hath_client.log'),
-        encoding='utf-8'
-    )
-    app_handler.setFormatter(detailed_formatter)
-    app_handler.setLevel(logging.DEBUG)
-    
-    # Add handlers to root logger
-    root_logger.addHandler(app_handler)
-        
-    # Also keep console output
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(detailed_formatter)
-    console_handler.setLevel(logging.INFO)
-    root_logger.addHandler(console_handler)
-    
-    logging.debug("File logging initialized - logs will be stored in 'log' directory")
-    logging.debug("Log files: hath_client.log")
-    logging.debug("Log rotation is handled by system logrotate (multiprocess-safe)")
-
-# Setup file logging
 setup_file_logging()
 
 logger = logging.getLogger(__name__)
+
+requests_headers = {
+    'User-Agent': 'Hentai@Home Python Client 0.2'
+}
 
 app = Flask(__name__)
 
 @app.before_request
 def handle_double_slash_in_servercmd():
     """Handle the double slash case in servercmd URLs."""
-    g.start_time = time.perf_counter()
     if request.path.startswith('/servercmd/') and '//' in request.path:
         # This specifically handles /servercmd/command//timestamp/key patterns
         # Replace // with / and internally redirect
@@ -108,28 +51,16 @@ def handle_double_slash_in_servercmd():
 @app.after_request
 def after_request(response):
     """Log the duration of the request."""
-    duration = time.perf_counter() - g.start_time
-    length = response.headers.get('Content-Length')
-    if length is not None:
-        size = int(length)
+    if response.status_code == 200 or response.status_code == 301:
+        logger.info(f'{request.remote_addr} - OK[{response.status_code}]: {request.method} {request.path}')
     else:
-        # If not set, calculate the length of the response data (may not always be accurate for streamed responses)
-        data = response.get_data()
-        size = len(data) if data else 0
-    if size > 0 and duration > 0:
-        speed = size / duration / 1024
-    else:
-        speed = 0
-    if response.status_code == 200:
-        logger.info(f'{request.remote_addr} - {request.method} {request.path} - {size} bytes in {duration:.2f} seconds ({speed:.2f} KB/s)')
-    else:
-        logger.warning(f'{request.remote_addr} - {request.method} {request.path} - {response.status_code}')
+        logger.warning(f'{request.remote_addr} - WARNING[{response.status_code}]: {request.method} {request.path}')
     return response
 
 @app.route('/')
 def index():
     """Basic health check endpoint."""
-    return 'Hentai@Home Client', {'Content-Type': 'text/plain'}
+    return 'Hentai@Home Python Client', {'Content-Type': 'text/plain'}
 
 def parse_additional_params(additional: str) -> dict:
     """Parse additional parameters from key=value;key=value format."""
@@ -141,55 +72,76 @@ def parse_additional_params(additional: str) -> dict:
                 params[key.strip()] = value.strip()
     return params
 
+@app.route('/status/<actkey>')
+def status(actkey: str):
+    """Get the current status of the server."""
+    # Check hath_config before using it
+    hath_config = get_hath_config()
+    if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
+        logger.error("Missing hath_config, client_id or client_key for remote fetch")
+        return 'Internal Server Error', 500, {'Content-Type': 'text/plain'}
+
+    expected = hashlib.sha1(f'hentai@home-status-{hath_config.client_id}'.encode()).hexdigest()
+    if not actkey or actkey != expected:
+        return "Forbidden", 403, {'Content-Type': 'text/plain'}
+
+    import db_manager
+    try:
+        cache_status = db_manager.get_cache_stats()
+        return jsonify({"status": "ok", "cache": cache_status})
+    except Exception as e:
+        logger.error(f"Error fetching cache status: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/h/<file_id>/<additional>/<filename>')
 def serve_file(file_id: str, additional: str, filename: str):
     import cache_manager
     """Serve cached files with authentication."""
     # Parse additional parameters
     params = parse_additional_params(additional)
-    
+
     keystamp = params.get('keystamp', '')
     fileindex = params.get('fileindex', '')
     xres = params.get('xres', '')
-    
+
     # Extract expected hash from keystamp
     if '-' not in keystamp:
         logger.warning(f"Invalid keystamp format: {keystamp}")
         return 'Invalid keystamp format', 400, {'Content-Type': 'text/plain'}
-    
+
     try:
         keystamp_time, expected = keystamp.split('-', 1)
     except ValueError:
         logger.warning(f"Could not parse keystamp: {keystamp}")
         return 'Invalid keystamp format', 400, {'Content-Type': 'text/plain'}
-    
+
     # Verify authentication
     import verification_manager
     if not verification_manager.verify_h_endpoint_auth(keystamp_time, expected, file_id):
         logger.warning(f"Authentication failed for file: {file_id}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
-    
+
     # Validate fileindex
     if not fileindex:
         logger.warning(f"Missing fileindex for file: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
-    
+
     try:
         fileindex_int = int(fileindex)
     except ValueError:
         logger.warning(f"Invalid fileindex format: {fileindex}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
-    
+
     # Validate xres
     if xres != 'org' and not xres.isdigit():
         logger.warning(f"Invalid xres value: {xres}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
-    
+
     # Check if file exists
     if len(file_id) < 2:
         logger.warning(f"File ID too short: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
-    
+
     l1dir = file_id[:2]
     l2dir = file_id[2:4]
     file_path = os.path.join('cache', l1dir, l2dir, file_id)
@@ -200,7 +152,7 @@ def serve_file(file_id: str, additional: str, filename: str):
     }
 
     # Determine content type
-    if 'wbp' in filename or 'wbp' in file_id:
+    if 'wbp' in filename or '-wbp' in file_id:
         content_type = 'image/webp'
     else:
         content_type, _ = mimetypes.guess_type(filename)
@@ -213,11 +165,12 @@ def serve_file(file_id: str, additional: str, filename: str):
             shutil.rmtree(file_path)
         # Prepare remote fetch URL
         success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
-        if success:
+        if success and file_resp:
             # Save to cache and stream to client simultaneously
+            file_size = len(file_resp.content)
             logger.debug(f"Streaming file: {file_id} as {content_type}")
             return Response(
-                cache_manager.generate_and_cache(file_path, file_id, file_resp),
+                cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
                 mimetype=content_type,
                 headers=response_headers
             )
@@ -228,11 +181,14 @@ def serve_file(file_id: str, additional: str, filename: str):
         os.remove(file_path)
         # Prepare remote fetch URL
         success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
-        if success:
+        if success and file_resp:
             # Save to cache and stream to client simultaneously
-            logger.debug(f"Streaming file: {file_id} as {content_type}")
+            file_size = len(file_resp.content)
+            file_size_kb = file_size / 1024
+            logger.info(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
+
             return Response(
-                cache_manager.generate_and_cache(file_path, file_id, file_resp),
+                cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
                 mimetype=content_type,
                 headers=response_headers
             )
@@ -241,12 +197,11 @@ def serve_file(file_id: str, additional: str, filename: str):
 
     else:
         try:
-            logger.debug(f"Serving file: {file_path} as {content_type}")
-            
             # Update last access time for cache tracking
-            static_name = file_id[:4]
-            db.update_last_access(static_name)
-            
+            file_size = Path(file_path).stat().st_size
+            file_size_kb = file_size / 1024
+            logger.info(f"Serving {file_size_kb:.2f} kB file: {file_path} as {content_type}")
+
             return Response(
                 cache_manager.serve_from_file(file_path, file_id),
                 mimetype=content_type,
@@ -256,6 +211,22 @@ def serve_file(file_id: str, additional: str, filename: str):
         except Exception as e:
             logger.error(f"Error serving file {file_path}: {e}")
             return 'File serving failed', 500, {'Content-Type': 'text/plain'}
+
+def generate_speed_test_data(testsize_int):
+    import cache_manager
+    sleep_time = cache_manager.get_throttled_speed()
+    chunk_size = 8192  # 8KB chunks
+    remaining = testsize_int
+    chunk_data = b'0' * chunk_size
+
+    while remaining > 0:
+        if remaining >= chunk_size:
+            yield chunk_data
+            remaining -= chunk_size
+        else:
+            yield b'0' * remaining
+            remaining = 0
+        time.sleep(sleep_time)
 
 @app.route('/servercmd/<command>/<additional>/<time_param>/<key>')
 @app.route('/servercmd/<command>/<time_param>/<key>', defaults={'additional': ''})
@@ -275,6 +246,15 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         logger.warning(f"Unauthorized command attempt from IP: {client_ip}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
 
+    current_time = time.time()
+    try:
+        if int(time_param) < current_time - 300:
+            logger.warning(f'Received expired servercmd: {command}, {additional}, {time_param}, {key}')
+            return 'Get servercmd with expired key', 403, {'Content-Type': 'text/plain'}
+    except Exception as e:
+        logger.warning(f'Invalid time parameter in servercmd: {time_param}, error: {e}')
+        return 'Invalid time parameter', 400, {'Content-Type': 'text/plain'}
+
     # Verify authentication key
     import verification_manager
     if not verification_manager.verify_servercmd_key(command, additional, time_param, key):
@@ -282,15 +262,15 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
 
     logger.debug(f"Received servercmd: {command} with additional: {additional}")
-    
+
     # Parse additional parameters
     params = parse_additional_params(additional)
-    
+
     # Handle different commands
     if command == 'still_alive':
         logger.debug("Processing still_alive command")
         return "I feel FANTASTIC and I'm still alive", 200, {'Content-Type': 'text/plain'}
-    
+
     elif command == 'speed_test':
         # Get testsize from additional parameters
         testsize_str = params.get('testsize', '0')
@@ -300,24 +280,10 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
                 return 'Invalid testsize', 400, {'Content-Type': 'text/plain'}
             
             # Generate actual data for speed test
-            logger.info(f"Processing speed_test command with testsize: {testsize}")
-            
-            # Generate data efficiently in chunks
-            def generate_test_data():
-                chunk_size = 8192  # 8KB chunks
-                remaining = testsize
-                chunk_data = b'0' * chunk_size
-                
-                while remaining > 0:
-                    if remaining >= chunk_size:
-                        yield chunk_data
-                        remaining -= chunk_size
-                    else:
-                        yield b'0' * remaining
-                        remaining = 0
+            logger.debug(f"Processing speed_test command with testsize: {testsize}")
             
             return Response(
-                generate_test_data(),
+                generate_speed_test_data(testsize),
                 status=200,
                 headers={
                     'Content-Type': 'application/octet-stream',
@@ -327,7 +293,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
             
         except ValueError:
             return 'Invalid testsize format', 400, {'Content-Type': 'text/plain'}
-    
+
     elif command == 'threaded_proxy_test':
         # Get required parameters from additional
         scheme = params.get('protocol', 'http')
@@ -352,7 +318,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
                     url = f"{scheme}://{hostname}:{port}/t/{testsize}/{testtime}/{testkey}/{random_val}"
                     logger.debug(f"Making request to: {url}")
                     start_time = time.time()
-                    response = requests.get(url, timeout=30)
+                    response = requests.get(url, headers=requests_headers, timeout=30)
                     end_time = time.time()
                     
                     return end_time - start_time, response.status_code == 200
@@ -454,11 +420,10 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         except Exception as e:
             logger.error(f"Settings refresh error: {e}")
             return f"FAIL: Settings refresh failed - {str(e)}", 500, {'Content-Type': 'text/plain'}
-    
+
     else:
         logger.warning(f"Unknown servercmd command: {command}")
         return 'Unknown command', 400, {'Content-Type': 'text/plain'}
-
 
 @app.route('/t/<testsize>/<testtime>/<key>')
 @app.route('/t/<testsize>/<testtime>/<key>/<random>')
@@ -466,35 +431,29 @@ def speed_test_endpoint(testsize: str, testtime: str, key: str, random: str = ""
     """Speed test endpoint with optional random parameter."""
     # Log access request
     client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
-    
+
     # Verify authentication key
     import verification_manager
     if not verification_manager.verify_speed_test_key(testsize, testtime, key):
         logger.warning(f"Invalid authentication key for /t/ endpoint: testsize={testsize}, testtime={testtime}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
-    
+
     try:
         testsize_int = int(testsize)
         if testsize_int < 0 or testsize_int > 100 * 1024 * 1024:  # Limit to 100MB
             logger.warning(f"Invalid testsize for /t/ endpoint: {testsize}")
             return "Invalid testsize", 400, {'Content-Type': 'text/plain'}
-                
-        # Generate actual data for speed test
-        def generate_test_data():
-            chunk_size = 8192  # 8KB chunks
-            remaining = testsize_int
-            chunk_data = b'0' * chunk_size
-            
-            while remaining > 0:
-                if remaining >= chunk_size:
-                    yield chunk_data
-                    remaining -= chunk_size
-                else:
-                    yield b'0' * remaining
-                    remaining = 0
-        
+        current_time = time.time()
+        try:
+            if current_time - int(testtime) > 300:
+                logger.warning(f'Received expired speed test: {testsize}, {testtime}, {key}')
+                return 'Get speed test with expired key', 403, {'Content-Type': 'text/plain'}
+        except Exception as e:
+            logger.error(f"Error processing speed test: {e}")
+            return 'Error processing speed test', 400, {'Content-Type': 'text/plain'}
+        logger.debug(f'Serving speed test of {testsize_int} bytes')
         return Response(
-            generate_test_data(),
+            generate_speed_test_data(testsize_int),
             status=200,
             headers={
                 'Content-Type': 'application/octet-stream',
@@ -528,45 +487,14 @@ def internal_error(error):
 
 def create_app():
     """Create and configure the Flask application."""
-    
+
     logger.info(f"Process {os.getpid()}: Starting Hentai@Home Flask worker...")
-    
+
     # Get configuration - will try to load from cache if not already initialized
     hath_config = get_hath_config()
     if hath_config is None:
-        logger.info("Configuration not found in cache, initializing fresh configuration...")
-        
-        # Initialize configuration from scratch (development mode or cache failure)
-        hath_config = HathConfig()
-        
-        if not hath_config.initialize():
-            logger.error("Failed to initialize configuration")
-            raise RuntimeError("Configuration initialization failed")
-        
-        # Initialize the singleton with our config
-        initialize_config(hath_config)
-
-        # Initialize database
-        db.initialize_database()
-
-        # Update logging level based on configuration
-        import event_manager
-        event_manager.update_logging_level()
-
-        # Validate cache before notifying the server
-        import cache_manager
-        cache_manager.cache_validation()
-        
-        # Start notification in background - it will wait for server to be ready
-        import background_manager
-        # do not notify master
-        # background_manager.start_background_task()
-
-        # Start configuration file monitoring
-        event_manager.start_config_file_monitor()
-
-        # Setup shutdown handlers for graceful shutdown
-        background_manager.setup_shutdown_handlers()
+        logger.error("No configuration found, bail out...")
+        sys.exit()
     else:
         logger.info(f"Process {os.getpid()}: Using cached configuration from main process")
 
@@ -574,34 +502,3 @@ def create_app():
 
     return app
 
-
-if __name__ == '__main__':
-    try:
-        # Create and configure the app
-        app = create_app()
-        
-        # Get Flask configuration from hath_config
-        hath_config = get_hath_config()
-        if not hath_config:
-            logger.error("Configuration not available")
-            raise RuntimeError("Configuration not available")
-            
-        flask_config = hath_config.get_flask_config()
-        
-        logger.debug(f"Starting Flask development server on {flask_config['host']}:{flask_config['port']}")
-        
-        if flask_config['ssl_context']:
-            logger.debug("SSL enabled with client certificate")
-        
-        # Start the Flask application (this is blocking)
-        app.run(
-            host=flask_config['host'],
-            port=flask_config['port'],
-            ssl_context=flask_config['ssl_context'],
-            debug=flask_config['debug'],
-            threaded=flask_config['threaded']
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to start application: {e}")
-        raise
