@@ -168,7 +168,8 @@ def serve_file(file_id: str, additional: str, filename: str):
         if success and file_resp:
             # Save to cache and stream to client simultaneously
             file_size = len(file_resp.content)
-            logger.debug(f"Streaming file: {file_id} as {content_type}")
+            file_size_kb = file_size / 1024
+            logger.debug(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
             return Response(
                 cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
                 mimetype=content_type,
