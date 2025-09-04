@@ -3,6 +3,7 @@ import cache_manager
 import db_manager as db
 import event_manager
 import storage_manager
+import download_manager
 import logging
 import socket
 import signal

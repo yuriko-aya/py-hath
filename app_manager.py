@@ -7,6 +7,7 @@ import os
 import mimetypes
 import shutil
 import sys
+import download_manager
 
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -428,6 +429,14 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
             logger.error(f"Settings refresh error: {e}")
             return f"FAIL: Settings refresh failed - {str(e)}", 500, {'Content-Type': 'text/plain'}
 
+    elif command == 'start_downloader':
+        logger.info("Processing start_downloader command")
+        if not hath_config:
+            logger.error("Configuration not available for downloader start")
+            return '', 200, {'Content-Type': 'text/plain'}
+
+        download_manager.trigger_download()
+        return '', 200, {'Content-Type': 'text/plain'}
     else:
         logger.warning(f"Unknown servercmd command: {command}")
         return 'Unknown command', 400, {'Content-Type': 'text/plain'}

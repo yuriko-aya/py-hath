@@ -15,6 +15,7 @@ A robust, modular Python implementation of a Hentai@Home client that provides hi
 
 ### Advanced Features
 - **Database-Driven Cache**: SQLite-based cache management with transaction safety
+- **Download Manager**: Automated gallery downloading with ZIP compression and retry logic
 - **Event System**: Centralized event management for coordinated operations
 - **Configuration Singleton**: Thread-safe configuration management across workers
 - **Verification System**: Automated cache integrity verification
@@ -95,6 +96,7 @@ The application follows a clean, modular architecture with dedicated managers:
 - **`cache_manager.py`**: Cache operations and file management
 - **`config_singleton.py`**: Thread-safe configuration management
 - **`db_manager.py`**: SQLite database operations with connection pooling
+- **`download_manager.py`**: Gallery download management with automatic ZIP compression
 - **`event_manager.py`**: Centralized event system for component coordination
 - **`log_manager.py`**: Logging configuration and management
 - **`rpc_manager.py`**: Server communication and RPC handling
@@ -187,12 +189,14 @@ py-hath/
 ├── cache_manager.py         # Cache operations and file management
 ├── config_singleton.py      # Thread-safe configuration management
 ├── db_manager.py           # SQLite database operations
+├── download_manager.py     # Gallery download management with ZIP compression
 ├── event_manager.py        # Centralized event system
 ├── hath_config.py          # Configuration loading and server communication
 ├── log_manager.py          # Logging configuration
 ├── rpc_manager.py          # Server RPC communication
 ├── storage_manager.py      # Storage allocation and cleanup
 ├── verification_manager.py # Cache integrity verification
+├── zip_compressor.py       # ZIP compression utility for gallery downloads
 ├── run_gunicorn.py         # Gunicorn production server launcher
 ├── wsgi.py                 # WSGI application entry point
 ├── gunicorn.conf.py        # Gunicorn configuration
@@ -214,6 +218,9 @@ py-hath/
 │   └── [xx]/              # Hash-organized directories (e.g., 6a/, 6b/, etc.)
 │       └── [xx]/          # Secondary hash level
 │           └── [files]    # Cached image files
+├── download/              # Gallery downloads and ZIP archives
+│   ├── [Gallery Name [ID-Resolution]]/  # Downloaded gallery directories
+│   └── [Gallery Name [ID-Resolution]].zip  # Compressed gallery archives
 ├── log/                   # Application logs
 │   ├── hath_client.log    # General application logs
 │   ├── hath_errors.log    # Error logs
@@ -232,6 +239,51 @@ py-hath/
 - `GET /` - Health check and server status
 - `POST /servercmd/<command>/<additional>/<time>/<key>` - Server command interface
 - `GET /h/<fileid>/<additional>/<filename>` - Image serving endpoint
+
+## Download Manager
+
+The download manager provides automated gallery downloading capabilities for the H@H client. It operates as a background service that can be triggered via server commands.
+
+### Features
+- **Automated Gallery Downloads**: Continuously processes download queues from the H@H server
+- **Multi-file Support**: Downloads complete galleries with all associated files
+- **Hash Verification**: SHA1 hash validation for file integrity
+- **Retry Logic**: Automatic retry with multiple download mirrors
+- **ZIP Compression**: Individual gallery compression with automatic cleanup
+- **Background Processing**: Non-blocking operation via separate threads and processes
+
+### How It Works
+1. **Queue Fetching**: Retrieves pending downloads from the H@H server
+2. **Metadata Parsing**: Extracts gallery information and file lists
+3. **File Downloads**: Downloads each file with hash verification and retry logic
+4. **ZIP Creation**: Compresses completed galleries using `zip_compressor.py`
+5. **Cleanup**: Removes original directories after successful compression
+6. **Progress Tracking**: Marks galleries as downloaded to avoid reprocessing
+
+### Server Commands
+The download manager is triggered via the `start_downloader` server command:
+- Server sends command to `/servercmd/start_downloader/<timestamp>/<key>`
+- Download manager starts in background thread
+- Processes all pending downloads until queue is empty
+
+### Files and Structure
+- **`download_manager.py`**: Main download logic and queue processing
+- **`zip_compressor.py`**: Individual gallery ZIP compression utility
+- **`download/`**: Download directory for gallery files and ZIP archives
+
+### Configuration
+The download manager uses the existing H@H configuration:
+- Client ID and key for server authentication
+- Download directory path (defaults to `download/`)
+- Retry logic and timeout settings
+- Logging configuration
+
+### Monitoring
+Download progress is logged to the standard application logs:
+- Gallery download start/completion events
+- File download progress and errors
+- ZIP compression status
+- Server communication events
 
 ## Logging
 
@@ -350,6 +402,7 @@ The application follows a modular architecture with clear separation of concerns
 ### Manager Modules
 - **`background_manager.py`**: Coordinates background tasks and worker processes
 - **`cache_manager.py`**: Handles cache operations, file management, and cleanup
+- **`download_manager.py`**: Manages gallery downloads, ZIP compression, and queue processing
 - **`event_manager.py`**: Centralized event system for inter-component communication
 - **`log_manager.py`**: Logging configuration with file rotation and structured output
 - **`rpc_manager.py`**: Server communication, RPC calls, and protocol handling

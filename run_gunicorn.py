@@ -130,18 +130,8 @@ def main():
     gunicorn_cmd = [
         gunicorn_executable,
         '--bind', f'{host}:{port}',
-        '--workers', '4',
-        '--worker-class', 'gevent',
-        '--timeout', '10',
-        '--keep-alive', '0',
-        '--max-requests', '1000',
-        '--max-requests-jitter', '100',
-        '--access-logfile', 'log/gunicorn_access.log',
-        '--error-logfile', 'log/gunicorn_error.log',
-        '--log-level', 'info',
         '--certfile', cert_file_path,
         '--keyfile', key_file_path,
-        '--ciphers', 'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS',
         'wsgi:application'
     ]
 

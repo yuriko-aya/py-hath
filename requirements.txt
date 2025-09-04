@@ -5,3 +5,4 @@ waitress>=2.1.0
 gunicorn>=21.2.0
 watchdog>=3.0.0
 gevent==25.8.2
+psutil==7.0.0
