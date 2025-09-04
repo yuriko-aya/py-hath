@@ -11,7 +11,7 @@ import sys
 # Add the application directory to Python path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from app import create_app
+from app_manager import create_app
 
 # Create the application instance
 # In Gunicorn mode, configuration should already be initialized by run_gunicorn.py

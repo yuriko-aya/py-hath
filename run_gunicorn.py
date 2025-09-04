@@ -15,15 +15,10 @@ Features:
 - Proper certificate handling
 - Production-ready configuration
 """
-import app
 import os
 import sys
 import logging
 import subprocess
-import atexit
-import signal
-import threading
-import time
 import db_manager as db
 import log_manager
 

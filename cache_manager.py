@@ -325,5 +325,5 @@ def check_cache_size():
         prune_cache()
         return True
     else:
-        logger.info(f'Cache size is within limits: current={current_cache_size} bytes, limit={max_cache_size} bytes')
+        logger.debug(f'Cache size is within limits: current={current_cache_size} bytes, limit={max_cache_size} bytes')
         return True
