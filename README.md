@@ -1,3 +1,7 @@
+## ⚠️ DISCLAIMER
+
+**WARNING: Use at your own risk. The author(s) of this software will not take any responsibility for any data loss, corruption, or other damages that may occur from using this program. Always backup your data before use.**
+
 # Hentai@Home Python Client
 
 A robust, modular Python implementation of a Hentai@Home client that provides high-performance image caching and serving capabilities with enterprise-grade architecture.
