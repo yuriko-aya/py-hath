@@ -8,6 +8,7 @@ import mimetypes
 import shutil
 import sys
 import download_manager
+import db_manager as db
 
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +29,7 @@ app = Flask(__name__)
 @app.before_request
 def handle_double_slash_in_servercmd():
     """Handle the double slash case in servercmd URLs."""
+    g.start_time = time.perf_counter()
     if request.path.startswith('/servercmd/') and '//' in request.path:
         # This specifically handles /servercmd/command//timestamp/key patterns
         # Replace // with / and internally redirect
@@ -52,10 +54,27 @@ def handle_double_slash_in_servercmd():
 @app.after_request
 def after_request(response):
     """Log the duration of the request."""
-    if response.status_code == 200 or response.status_code == 301:
-        logger.info(f'{request.remote_addr} - OK[{response.status_code}]: {request.method} {request.path}')
+    """Log the duration of the request."""
+    duration = time.perf_counter() - g.start_time
+    length = response.headers.get('Content-Length')
+    if length is not None:
+        size = int(length)
     else:
-        logger.warning(f'{request.remote_addr} - WARNING[{response.status_code}]: {request.method} {request.path}')
+        # If not set, calculate the length of the response data (may not always be accurate for streamed responses)
+        data = response.get_data()
+        size = len(data) if data else 0
+    if size > 0 and duration > 0:
+        speed = size / duration / 1024
+        size_kb = size / 1024
+    else:
+        speed = 0
+        size_kb = 0
+    if response.status_code == 200:
+        logger.info(f'{request.remote_addr} - {request.method} {request.path} - Sending {size_kb:.2f} kB in {duration:.2f} seconds ({speed:.2f} KB/s)')
+    elif response.status_code == 301:
+        logger.info(f'{request.remote_addr} - {request.method} {request.path} - Redirecting to {response.headers.get("Location")}')
+    else:
+        logger.warning(f'{request.remote_addr} - {request.method} {request.path} - {response.status_code}')
     return response
 
 @app.route('/')
@@ -143,6 +162,7 @@ def serve_file(file_id: str, additional: str, filename: str):
         logger.warning(f"File ID too short: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
 
+    static_name = file_id[:4]
     l1dir = file_id[:2]
     l2dir = file_id[2:4]
     file_path = os.path.join('cache', l1dir, l2dir, file_id)
@@ -174,11 +194,31 @@ def serve_file(file_id: str, additional: str, filename: str):
                 file_size = len(file_resp.content)
             file_size_kb = file_size / 1024
             logger.debug(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
+
+            content = file_resp.content
+
+            with open(file_path, 'wb') as f:
+                f.write(content)
+
+            logger.debug(f"File cached at: {file_path}")
+            db.update_last_access(static_name, new_file=True)
+            db.update_file_size(file_size)
+
+            response_headers.update({
+                'Content-Length': str(file_size),
+            })
+
             return Response(
-                cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
+                content,
                 mimetype=content_type,
                 headers=response_headers
             )
+
+            # return Response(
+            #     cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
+            #     mimetype=content_type,
+            #     headers=response_headers
+            # )
         else:
             return "File not found", 404, {'Content-Type': 'text/plain'}
 
@@ -195,11 +235,25 @@ def serve_file(file_id: str, additional: str, filename: str):
             file_size_kb = file_size / 1024
             logger.info(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
 
+            content = file_resp.content
+
+            with open(file_path, 'wb') as f:
+                f.write(content)
+
+            logger.debug(f"File cached at: {file_path}")
+            db.update_last_access(static_name, new_file=True)
+            db.update_file_size(file_size)
+
+            response_headers.update({
+                'Content-Length': str(file_size),
+            })
+
             return Response(
-                cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
+                content,
                 mimetype=content_type,
                 headers=response_headers
             )
+
         else:
             return "File not found", 404, {'Content-Type': 'text/plain'}
 
@@ -209,9 +263,17 @@ def serve_file(file_id: str, additional: str, filename: str):
             file_size = Path(file_path).stat().st_size
             file_size_kb = file_size / 1024
             logger.info(f"Serving {file_size_kb:.2f} kB file: {file_path} as {content_type}")
+            db.update_last_access(static_name)
+
+            with open(file_path, 'rb') as f:
+                content = f.read()
+
+            response_headers.update({
+                'Content-Length': str(file_size),
+            })
 
             return Response(
-                cache_manager.serve_from_file(file_path, file_id),
+                content,
                 mimetype=content_type,
                 headers=response_headers
             )

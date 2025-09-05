@@ -17,7 +17,7 @@ max_requests_jitter = 100
 # Logging
 accesslog = "log/gunicorn_access.log"
 errorlog = "log/gunicorn_error.log"
-loglevel = "debug"
+loglevel = "info"
 
 # SSL/TLS
 ciphers = "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
