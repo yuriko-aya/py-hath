@@ -52,25 +52,55 @@ def close_thread_connection():
 
 def initialize_database():
     """Initialize the database schema if it doesn't exist."""
-    if os.path.exists(db_path):
-        return
-    
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    
-    with get_db_connection() as conn:
+
+    # Use direct SQLite connection for initialization (runs only once at startup)
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        # Enable WAL mode for better concurrency
+        conn.execute('PRAGMA journal_mode=WAL')
+        # Enable foreign keys
+        conn.execute('PRAGMA foreign_keys=ON')
+        
+        # Check if tables exist
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name IN ('cache', 'cache_info');
+        """)
+        existing = {row[0] for row in cursor.fetchall()}
+        if {"cache", "cache_info"}.issubset(existing):
+            cursor.execute("""SELECT cache_count FROM cache_info""")
+            cache_info = cursor.fetchone()
+            if cache_info is not None:
+                logger.debug('Database already initialized')
+                return False
+            else:
+                logger.warning('Database tables exist but cache_info is missing data, reinitializing')
+            
+        # Create tables
+        cursor.executescript('''
             CREATE TABLE IF NOT EXISTS cache (
                 static_range TEXT PRIMARY KEY,
                 count INTEGER DEFAULT 0,
                 last_access TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            );
+
+            CREATE TABLE IF NOT EXISTS cache_info (
+                cache_count INTEGER DEFAULT 0,
+                cache_size INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_last_access ON cache(last_access);
+            
+            INSERT OR IGNORE INTO cache_info (cache_count, cache_size) VALUES (0, 0);
         ''')
-        # Create index for performance
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_last_access ON cache(last_access)
-        ''')
+        conn.commit()
         logger.info("Database initialized successfully")
+        return True
+        
+    finally:
+        conn.close()
 
 def get_oldest_static_range() -> Tuple[Optional[str], Optional[int]]:
     """Get the oldest static range by last access time."""
@@ -104,6 +134,8 @@ def update_last_access(static_range: str, new_file: bool = False) -> bool:
                     ON CONFLICT(static_range) 
                     DO UPDATE SET last_access = CURRENT_TIMESTAMP, count = count + 1
                 ''', (static_range,))
+                # Update the total cache count when adding a new file, using the same connection
+                update_cache_count(conn)
             else:
                 cursor.execute('''
                     INSERT INTO cache (static_range, count, last_access) 
@@ -121,6 +153,7 @@ def update_file_count(static_range: str, removal: bool = False) -> bool:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            
             if removal:
                 # If removing file, decrement count but don't go below 0
                 # Don't update last_access when removing files
@@ -137,9 +170,106 @@ def update_file_count(static_range: str, removal: bool = False) -> bool:
                     ON CONFLICT(static_range) 
                     DO UPDATE SET count = count + 1, last_access = CURRENT_TIMESTAMP
                 ''', (static_range,))
+            
+            # Update the total cache count using the same connection/transaction
+            update_cache_count(conn)
             return True
     except Exception as e:
         logger.error(f"Error updating file count for {static_range}: {e}")
+        return False
+
+def update_file_size(file_size: int, removal: bool = False):
+    """Update total cache size"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Ensure cache_info table has at least one row
+            cursor.execute('SELECT COUNT(*) FROM cache_info')
+            if cursor.fetchone()[0] == 0:
+                cursor.execute('INSERT INTO cache_info (cache_count, cache_size) VALUES (0, 0)')
+            
+            if removal:
+                cursor.execute('''
+                    UPDATE cache_info
+                    SET cache_size = MAX(cache_size - ?, 0)
+                ''', (file_size,))
+            else:
+                cursor.execute('''
+                    UPDATE cache_info
+                    SET cache_size = cache_size + ?
+                ''', (file_size,))
+            
+            # Verify the update worked
+            if cursor.rowcount == 0:
+                logger.warning("No rows were updated in cache_info table")
+                return False
+            
+            return True
+    except Exception as e:
+        logger.error(f"Error updating file size: {e}")
+        return False
+
+def update_cache_count(conn=None):
+    """Update the total cache count based on the sum of all static range counts."""
+    try:
+        # Use provided connection or create a new one
+        if conn is not None:
+            cursor = conn.cursor()
+            
+            # Ensure cache_info table has at least one row
+            cursor.execute('SELECT COUNT(*) FROM cache_info')
+            if cursor.fetchone()[0] == 0:
+                cursor.execute('INSERT INTO cache_info (cache_count, cache_size) VALUES (0, 0)')
+            
+            # Calculate total count from all static ranges
+            cursor.execute('SELECT COALESCE(SUM(count), 0) FROM cache')
+            total_count = cursor.fetchone()[0]
+            
+            # Update the cache_info table
+            cursor.execute('UPDATE cache_info SET cache_count = ?', (total_count,))
+            
+            if cursor.rowcount == 0:
+                logger.warning("No rows were updated in cache_info table for count")
+                return False
+            
+            return True
+        else:
+            # Fallback to creating own connection if none provided
+            with get_db_connection() as conn:
+                return update_cache_count(conn)
+            
+    except Exception as e:
+        logger.error(f"Error updating cache count: {e}")
+        return False
+
+def recalculate_cache_totals():
+    """Recalculate both cache count and size from actual data. Use for database repair/validation."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Ensure cache_info table has at least one row
+            cursor.execute('SELECT COUNT(*) FROM cache_info')
+            if cursor.fetchone()[0] == 0:
+                cursor.execute('INSERT INTO cache_info (cache_count, cache_size) VALUES (0, 0)')
+            
+            # Calculate total count from all static ranges
+            cursor.execute('SELECT COALESCE(SUM(count), 0) FROM cache')
+            total_count = cursor.fetchone()[0]
+            
+            # For size, we'd need to scan the actual files since we don't store per-range sizes
+            # For now, just update the count and leave size as-is
+            cursor.execute('UPDATE cache_info SET cache_count = ?', (total_count,))
+            
+            if cursor.rowcount == 0:
+                logger.warning("No rows were updated in cache_info table for recalculation")
+                return False
+            
+            logger.info(f"Cache totals recalculated: {total_count} files")
+            return True
+    except Exception as e:
+        logger.error(f"Error recalculating cache totals: {e}")
         return False
 
 def clean_up_data() -> bool:
@@ -149,6 +279,7 @@ def clean_up_data() -> bool:
             cursor = conn.cursor()
             # Delete all entries (as per original implementation)
             cursor.execute('DELETE FROM cache')
+            cursor.execute('DELETE FROM cache_info')
             rows_deleted = cursor.rowcount
             logger.info(f"Cleaned up {rows_deleted} cache entries")
             return True
@@ -174,10 +305,41 @@ def remove_static_range(static_range: str) -> bool:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM cache WHERE static_range = ?', (static_range,))
-            return cursor.rowcount > 0
+            success = cursor.rowcount > 0
+            if success:
+                # Update the total cache count after removing a static range using same connection
+                update_cache_count(conn)
+            return success
     except Exception as e:
         logger.error(f"Error removing static range {static_range}: {e}")
         return False
+
+def get_cache_size():
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT cache_size FROM cache_info')
+            row = cursor.fetchone()
+            if row:
+                return row[0] or 0
+            return 0
+    except Exception as e:
+        logger.error(f"Error getting cache size: {e}")
+        return 0
+
+def get_cache_count():
+    """Get the total number of files in cache."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT cache_count FROM cache_info')
+            row = cursor.fetchone()
+            if row:
+                return row[0] or 0
+            return 0
+    except Exception as e:
+        logger.error(f"Error getting cache count: {e}")
+        return 0
 
 def get_cache_stats() -> dict:
     """Get cache statistics for monitoring."""

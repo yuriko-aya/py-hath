@@ -18,7 +18,7 @@ class ConfigFileHandler(FileSystemEventHandler):
         self.config_file_path = str(config_file_path)
         self.config_filename = os.path.basename(self.config_file_path)
         logger.debug(f"Process {os.getpid()}: ConfigFileHandler initialized for: {self.config_file_path}")
-    
+
     def on_modified(self, event):
         """Handle file modification events."""
         if event.is_directory:
@@ -30,6 +30,8 @@ class ConfigFileHandler(FileSystemEventHandler):
             time.sleep(0.1)
             
             logger.info(f"Process {os.getpid()}: Configuration cache file modified: {event.src_path}")
+            # Reload configuration and update logging level
+            # This ensures all worker processes pick up new settings from /servercmd/refresh_settings
             update_logging_level_from_cache()
 
 # Global variables for file monitoring
@@ -39,11 +41,11 @@ _config_file_handler = None
 def start_config_file_monitor():
     """Start monitoring the configuration cache file for changes using watchdog."""
     global _config_observer, _config_file_handler
-    
+
     if _config_observer and _config_observer.is_alive():
         logger.debug(f"Process {os.getpid()}: Configuration file monitor already running")
         return  # Already running
-    
+
     try:
         config_dir = Path("data")
         config_file = config_dir / ".hath_config_cache.json"
@@ -80,7 +82,7 @@ def start_config_file_monitor():
 def stop_config_file_monitor():
     """Stop monitoring the configuration cache file."""
     global _config_observer, _config_file_handler
-    
+
     if _config_observer and _config_observer.is_alive():
         try:
             _config_observer.stop()
@@ -92,7 +94,7 @@ def stop_config_file_monitor():
                 logger.error(f"Error stopping configuration file monitoring: {e}")
             except:
                 pass
-    
+
     _config_observer = None
     _config_file_handler = None
 
@@ -119,18 +121,35 @@ def update_logging_level():
                     break
 
 def update_logging_level_from_cache():
-    """Update logging level by reloading configuration from cache file."""
-    hath_config = get_hath_config()
-    if not hath_config:
-        return
-    
+    """Update logging level and reload configuration by reloading from cache file."""
+    from config_singleton import force_reload_config
+
     try:
-        # Reload configuration from cache file directly
-        if hath_config.load_config_cache():
-            # Apply logging level changes
-            update_logging_level()
-            logger.debug("Logging level updated from configuration cache")
-        else:
-            logger.debug("No configuration cache available for logging level update")
+        # Force reload configuration in the singleton
+        logger.debug(f"Process {os.getpid()}: Reloading configuration from cache file...")
+        success = force_reload_config()
+        
+        if not success:
+            logger.warning("Failed to reload configuration from cache")
+            return
+        
+        # Get the updated config
+        hath_config = get_hath_config()
+        if not hath_config:
+            logger.warning("No configuration available after cache reload")
+            return
+        
+        # Apply logging level changes
+        update_logging_level()
+        logger.info(f"Process {os.getpid()}: Configuration and logging level updated from cache")
+        
+        # Log some key config changes for verification
+        host = hath_config.config.get('host', 'unknown')
+        port = hath_config.config.get('port', 'unknown')
+        disable_logging = hath_config.config.get('disable_logging', 'false')
+        logger.debug(f"Updated config: host={host}, port={port}, disable_logging={disable_logging}")
+        
     except Exception as e:
-        logger.error(f"Error updating logging level from cache: {e}")
+        logger.error(f"Error updating configuration and logging level from cache: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")

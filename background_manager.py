@@ -2,6 +2,8 @@ import atexit
 import cache_manager
 import db_manager as db
 import event_manager
+import storage_manager
+import download_manager
 import logging
 import socket
 import signal
@@ -9,12 +11,14 @@ import time
 import threading
 import hashlib
 import os
+import sys
+import rpc_manager
 
 from config_singleton import get_hath_config
 
 logger = logging.getLogger(__name__)
 
-def notify_server_startup():
+def start_background_task():
     """Notify the server that the client has started - runs in background thread."""
     def wait_for_server_and_notify():
         # Wait for Flask server to be ready by checking if port is listening
@@ -49,9 +53,9 @@ def notify_server_startup():
                         deleted_blacklist = cache_manager.blacklist_process(259200)
                         logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files") 
 
-                        logger.debug("Startup notification successful, starting periodic still_alive notifications...")
-                        # Start periodic still_alive notifications
-                        start_periodic_still_alive()
+                        logger.debug("Startup notification successful, starting periodic task and notifications...")
+                        # Start periodic task and still_alive notifications
+                        start_periodic_task()
                     else:
                         logger.warning("Startup notification failed, not starting periodic notifications")
                     return
@@ -63,19 +67,20 @@ def notify_server_startup():
             time.sleep(1)
         
         logger.error("Server did not start within 30 seconds, skipping notification")
-    
+
     # Run notification in background thread
     thread = threading.Thread(target=wait_for_server_and_notify, daemon=True)
     thread.start()
 
 
-def start_periodic_still_alive():
-    """Start periodic still_alive notifications every 5 minutes."""
+def start_periodic_task():
+    """Start periodic task and still_alive notifications."""
     def periodic_still_alive():
         counter = 1
         while True:
             try:
-                time.sleep(120)  # Wait 2 minutes (120 seconds)
+                # 2 minutes of each iterations
+                time.sleep(120)
                 hath_config = get_hath_config()
                 if not hath_config or not hath_config.client_id or not hath_config.client_key:
                     logger.error("Configuration not available for still_alive notification")
@@ -87,13 +92,13 @@ def start_periodic_still_alive():
                 actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
                 
                 url_path = (
-                    f"/15/rpc?clientbuild=176&act=still_alive"
+                    f"/15/rpc?clientbuild={hath_config.client_build}&act=still_alive"
                     f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
                 )
                 
                 logger.info("Sending periodic still_alive notification...")
-                response = hath_config._make_rpc_request(url_path, timeout=10)
-                
+                response = rpc_manager._make_rpc_request(url_path, timeout=10)
+
                 logger.debug(f"Still_alive notification sent successfully: {response.text.strip()}")
 
                 # Every 540 iterations (approximately every 18 hours), run blacklist cleanup
@@ -102,11 +107,18 @@ def start_periodic_still_alive():
                     logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files")
                 counter += 1
 
+                # Every 5 iteration (10 minutes), check if disk and cache size
+                if counter % 5 == 0:
+                    if not storage_manager.is_disk_ok():
+                        sys.exit(0)
+
+                    cache_manager.check_cache_size()
+
             except Exception as e:
                 logger.error(f"Failed to send still_alive notification: {e}")
                 counter += 1
                 # Continue running despite errors
-    
+
     # Start periodic notifications in background thread
     thread = threading.Thread(target=periodic_still_alive, daemon=True)
     thread.start()
@@ -121,45 +133,26 @@ _shutdown_lock = threading.Lock()
 def notify_client_stop():
     """Notify the server that the client is stopping."""
     global _shutdown_notification_sent
-    
-    # Only send notification from the process that holds the background tasks lock
-    lock_file = os.path.join('data', '.hath-background-tasks.lock')
-    should_notify = False
-    
-    try:
-        if os.path.exists(lock_file):
-            with open(lock_file, 'r') as f:
-                lock_pid = int(f.read().strip())
-            if lock_pid == os.getpid():
-                should_notify = True
-        else:
-            # If no lock file exists, we might be running in single-process mode
-            should_notify = True
-    except (ValueError, FileNotFoundError):
-        # If we can't read the lock file, don't send notification
-        should_notify = False
-    
+
+    should_notify = True
+        
     if not should_notify:
         logger.debug(f"Process {os.getpid()}: Skipping client_stop notification (not primary process)")
         return
-    
+
     with _shutdown_lock:
         if _shutdown_notification_sent:
             logger.debug("Client_stop notification already sent, skipping")
             return
         
         _shutdown_notification_sent = True
-    
+
     try:
         hath_config = get_hath_config()
         if not hath_config or not hath_config.client_id or not hath_config.client_key:
             logger.error("Configuration not available for client_stop notification")
             return
         
-        if not hath_config.is_server_ready:
-            logger.warning("Server was never marked as ready, skipping client_stop notification")
-            return
-
         logger.info("Sending client_stop notification...")
         
         # Generate client_stop notification URL
@@ -168,12 +161,12 @@ def notify_client_stop():
         actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
         
         url_path = (
-            f"/15/rpc?clientbuild=176&act=client_stop"
+            f"/15/rpc?clientbuild={hath_config.client_build}&act=client_stop"
             f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
         )
-        
-        response = hath_config._make_rpc_request(url_path, timeout=10)
-        
+
+        response = rpc_manager._make_rpc_request(url_path, timeout=10)
+
         logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
         
         # Clean up config cache when shutting down
@@ -194,7 +187,7 @@ def notify_client_stop():
 
 def setup_shutdown_handlers():
     """Setup signal handlers and atexit for graceful shutdown."""
-    
+
     def signal_handler(signum, frame):
         """Handle shutdown signals."""
         try:
@@ -208,7 +201,7 @@ def setup_shutdown_handlers():
         finally:
             # Exit without calling sys.exit() to avoid conflicts with threading cleanup
             os._exit(0)
-    
+
     def atexit_handler():
         """Handle normal exit."""
         try:
@@ -217,13 +210,13 @@ def setup_shutdown_handlers():
         except Exception:
             # Silently handle any exceptions during shutdown
             pass
-    
+
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
-    
+
     # Register atexit handler for normal shutdown
     atexit.register(atexit_handler)
-    
+
     logger.debug("Shutdown handlers registered for graceful client_stop notification")
 

@@ -54,6 +54,7 @@ cache/
 
 # Sensitive configuration and certificates
 data/*
+download/
 
 # Keep example configuration
 !data/client_login.example
