@@ -23,7 +23,7 @@ errorlog = "log/gunicorn_error.log"
 loglevel = "info"
 
 # SSL/TLS
-ciphers = "ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS"
+ciphers = "ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL:!MD5:!DSS"
 
 # Custom SSL Error Filter
 class SSLErrorFilter(logging.Filter):
