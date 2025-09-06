@@ -197,6 +197,8 @@ def serve_file(file_id: str, additional: str, filename: str):
 
             content = file_resp.content
 
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
             with open(file_path, 'wb') as f:
                 f.write(content)
 
@@ -236,6 +238,8 @@ def serve_file(file_id: str, additional: str, filename: str):
             logger.info(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
 
             content = file_resp.content
+
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
             with open(file_path, 'wb') as f:
                 f.write(content)
