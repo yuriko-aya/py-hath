@@ -6,8 +6,8 @@ import hashlib
 import requests
 import time
 import rpc_manager
+import config_manager
 
-from config_singleton import get_hath_config
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,7 +36,7 @@ def delete_static_range(static_range: str):
 def cache_validation(force_rescan=False):
     """Validate the cache state before notifying the server."""
     logger.info("Starting cache validation...")
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config or not hath_config.client_id or not hath_config.client_key:
         logger.error("Configuration not available for cache validation")
         return False
@@ -116,12 +116,12 @@ def cache_validation(force_rescan=False):
 def blacklist_process(timespan: int):
     logger.debug(f"Processing blacklist for timespan: {timespan}")
     # Check hath_config before using it
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
         logger.error("Missing hath_config, client_id or client_key for remote fetch")
         return False, None
     # Prepare actkey and acttime
-    current_acttime = hath_config.get_current_acttime()
+    current_acttime = config_manager.get_current_acttime()
     add = str(timespan)
     # actkey is SHA-1 of "hentai@home-srfetch-{add}-{client_id}-{current_acttime}-{client_key}"
     if not hath_config or not hath_config.client_id or not hath_config.client_key:
@@ -180,12 +180,12 @@ def verify_file_integrity(file_path:str, file_id:str):
 def fetch_remote_file(fileindex: str, xres: str, file_id: str):
     try:
         # Check hath_config before using it
-        hath_config = get_hath_config()
+        hath_config = config_manager.Config()
         if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
             logger.error("Missing hath_config, client_id or client_key for remote fetch")
             return False, None
         # Prepare actkey and acttime
-        current_acttime = hath_config.get_current_acttime()
+        current_acttime = config_manager.get_current_acttime()
         add = f"{fileindex};{xres};{file_id}"
         # actkey is SHA-1 of "hentai@home-srfetch-{add}-{client_id}-{current_acttime}-{client_key}"
         if not hath_config or not hath_config.client_id or not hath_config.client_key:
@@ -227,7 +227,7 @@ def fetch_remote_file(fileindex: str, xres: str, file_id: str):
         return False, None
 
 def get_throttled_speed():
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     chunk_size = 8192
     if not hath_config:
         logger.error("hath_config not available for throttled speed calculation")
@@ -301,7 +301,7 @@ def prune_cache():
 
 def check_cache_size():
     """Check the current cache size and log it."""
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config:
         logger.error("hath_config not available for cache size check")
         return

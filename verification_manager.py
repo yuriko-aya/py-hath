@@ -1,14 +1,13 @@
 import hashlib
 import time
 import logging
-
-from config_singleton import get_hath_config
+import config_manager
 
 logger = logging.getLogger(__name__)
 
 def verify_servercmd_key(command: str, additional: str, time_param: str, provided_key: str) -> bool:
     """Verify the authentication key for servercmd endpoint."""
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config or not hath_config.client_id or not hath_config.client_key:
         return False
 
@@ -21,7 +20,7 @@ def verify_servercmd_key(command: str, additional: str, time_param: str, provide
 
 def verify_speed_test_key(testsize: str, testtime: str, provided_key: str) -> bool:
     """Verify the authentication key for /t/ speed test endpoint."""
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config or not hath_config.client_id or not hath_config.client_key:
         return False
 
@@ -34,7 +33,7 @@ def verify_speed_test_key(testsize: str, testtime: str, provided_key: str) -> bo
 
 def verify_h_endpoint_auth(keystamp: str, expected: str, file_id: str) -> bool:
     """Verify authentication for /h/ endpoint."""
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config or not hath_config.client_key:
         return False
 

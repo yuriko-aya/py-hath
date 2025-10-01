@@ -94,3 +94,5 @@ poetry.lock
 *test*
 *tests*
 *-source
+config/
+.trash/

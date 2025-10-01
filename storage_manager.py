@@ -1,7 +1,7 @@
 import os
 import shutil
+import config_manager
 
-from config_singleton import get_hath_config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ def is_disk_ok():
     using the minimum threshold from hath_config (diskremaining_bytes).
     If not set, default to 1GB.
     '''
-    hath_config = get_hath_config()
+    hath_config = config_manager.Config()
     if not hath_config:
         logger.error('hath_config not available for notification')
         return False
