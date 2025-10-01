@@ -35,17 +35,14 @@ import os
 import hashlib
 import time
 import threading
+import settings
 import subprocess
 import sys
+import config_manager
 
 from pathlib import Path
-from hath_config import HathConfig
-from config_singleton import get_hath_config
 
 logger = logging.getLogger(__name__)
-
-default_hath_config = HathConfig()
-hath_config = get_hath_config()
 
 max_name_length = 90
 download_dir = 'download'
@@ -79,9 +76,10 @@ def get_queue(downloaded: bool = False, gid: int = 0, minxres: str = '') -> str:
         >>> metadata = get_queue()  # Get next download
         >>> get_queue(downloaded=True, gid=12345, minxres='1280')  # Mark as downloaded
     """
+    hath_config = config_manager.Config()
     act = 'fetchqueue'
 
-    if not hath_config or not default_hath_config:
+    if not hath_config:
         logger.error('HathConfig is not properly initialized for fetching download queue')
         return ''
 
@@ -89,7 +87,7 @@ def get_queue(downloaded: bool = False, gid: int = 0, minxres: str = '') -> str:
         add = f'{gid};{minxres}'
     else:
         add = ''
-    current_acttime = hath_config.get_current_acttime()
+    current_acttime = config_manager.get_current_acttime()
     actkey_data = f"hentai@home-{act}-{add}-{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
     actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
     url_path = (
@@ -329,7 +327,8 @@ def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
         >>> gallery_info = {'gid': 12345, 'files': [...], ...}
         >>> success = start_download(gallery_info, info_text, "/downloads/gallery")
     """
-    if not hath_config or not default_hath_config:
+    hath_config = config_manager.Config()
+    if not hath_config:
         logger.error('HathConfig is not properly initialized for fetching download queue')
         return False
     if not gallery_info.get('gid'):
@@ -352,7 +351,7 @@ def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
         file_sha1 = file.get('file_sha1', '')
         full_name = f"{file_name}.{file_type}"
         file_path = Path(dir_path) / full_name
-        current_acttime = hath_config.get_current_acttime()
+        current_acttime = config_manager.get_current_acttime()
         actkey_data = f"hentai@home-{act}-{add}-{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
         actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
         if file_path.exists() and file_path.is_file() and file_path.stat().st_size > 0:
@@ -409,6 +408,9 @@ def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
                 logger.error(f"Error removing info file: {e}")
         return False
     logger.info(f'Completed download for GID: {gid} {gallery_title}')
+    if not settings.zip_downloaded:
+        logger.debug('ZIP compression disabled in settings')        
+        return True
     subprocess.Popen(
         [python_exe, 'zip_compressor.py', dir_path],
         stdout=subprocess.DEVNULL,
@@ -452,10 +454,11 @@ def initialize_download_manager():
         >>> thread = threading.Thread(target=initialize_download_manager, daemon=True)
         >>> thread.start()
     """
+    hath_config = config_manager.Config()
     # Ensure download directory exists
     Path(download_dir).mkdir(exist_ok=True)
 
-    if not hath_config or not default_hath_config:
+    if not hath_config:
         logger.error('HathConfig is not properly initialized for fetching download queue')
         return False
 
@@ -489,6 +492,8 @@ def initialize_download_manager():
         zip_name = dir_path.with_name(dir_path.name + ".zip")
         if zip_name.exists() and zip_name.stat().st_size > 0:
             logger.info(f'Gallery ZIP already exists, skipping GID: {gid}')
+            mark_downloaded = gid
+            downloaded = True
             continue
         dir_path.mkdir(exist_ok=True)
         logger.debug(f'Created directory: {dir_path}')

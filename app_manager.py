@@ -8,20 +8,23 @@ import mimetypes
 import shutil
 import sys
 import download_manager
-import db_manager as db
+import db_manager
+import config_manager
+import verification_manager
+import cache_manager
+import event_manager
+import threading
 
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, g, jsonify, request, Response, send_file, redirect, url_for
-from config_singleton import get_hath_config, initialize_config
 from log_manager import setup_file_logging
-
-setup_file_logging()
+from werkzeug.test import EnvironBuilder
 
 logger = logging.getLogger(__name__)
 
 requests_headers = {
-    'User-Agent': 'Hentai@Home Python Client 0.2'
+    'User-Agent': 'Hentai@Home Python Client 0.3'
 }
 
 app = Flask(__name__)
@@ -41,8 +44,6 @@ def handle_double_slash_in_servercmd():
                 # Redirect to the route with defaults (no additional parameter)
                 command, time_param, key = parts[1], parts[2], parts[3]
                 # Generate new request to the proper endpoint
-                from werkzeug.test import EnvironBuilder
-                from werkzeug.wrappers import Request
                 
                 # Create a new request with the corrected path
                 builder = EnvironBuilder(path=corrected_path, method=request.method)
@@ -95,8 +96,8 @@ def parse_additional_params(additional: str) -> dict:
 @app.route('/status/<actkey>')
 def status(actkey: str):
     """Get the current status of the server."""
+    hath_config = config_manager.Config()
     # Check hath_config before using it
-    hath_config = get_hath_config()
     if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
         logger.error("Missing hath_config, client_id or client_key for remote fetch")
         return 'Internal Server Error', 500, {'Content-Type': 'text/plain'}
@@ -105,7 +106,6 @@ def status(actkey: str):
     if not actkey or actkey != expected:
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
 
-    import db_manager
     try:
         cache_status = db_manager.get_cache_stats()
         return jsonify({"status": "ok", "cache": cache_status})
@@ -115,7 +115,6 @@ def status(actkey: str):
 
 @app.route('/h/<file_id>/<additional>/<filename>')
 def serve_file(file_id: str, additional: str, filename: str):
-    import cache_manager
     """Serve cached files with authentication."""
     # Parse additional parameters
     params = parse_additional_params(additional)
@@ -136,7 +135,6 @@ def serve_file(file_id: str, additional: str, filename: str):
         return 'Invalid keystamp format', 400, {'Content-Type': 'text/plain'}
 
     # Verify authentication
-    import verification_manager
     if not verification_manager.verify_h_endpoint_auth(keystamp_time, expected, file_id):
         logger.warning(f"Authentication failed for file: {file_id}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
@@ -203,8 +201,8 @@ def serve_file(file_id: str, additional: str, filename: str):
                 f.write(content)
 
             logger.debug(f"File cached at: {file_path}")
-            db.update_last_access(static_name, new_file=True)
-            db.update_file_size(file_size)
+            db_manager.update_last_access(static_name, new_file=True)
+            db_manager.update_file_size(file_size)
 
             response_headers.update({
                 'Content-Length': str(file_size),
@@ -245,8 +243,8 @@ def serve_file(file_id: str, additional: str, filename: str):
                 f.write(content)
 
             logger.debug(f"File cached at: {file_path}")
-            db.update_last_access(static_name, new_file=True)
-            db.update_file_size(file_size)
+            db_manager.update_last_access(static_name, new_file=True)
+            db_manager.update_file_size(file_size)
 
             response_headers.update({
                 'Content-Length': str(file_size),
@@ -267,7 +265,7 @@ def serve_file(file_id: str, additional: str, filename: str):
             file_size = Path(file_path).stat().st_size
             file_size_kb = file_size / 1024
             logger.info(f"Serving {file_size_kb:.2f} kB file: {file_path} as {content_type}")
-            db.update_last_access(static_name)
+            db_manager.update_last_access(static_name)
 
             with open(file_path, 'rb') as f:
                 content = f.read()
@@ -287,7 +285,6 @@ def serve_file(file_id: str, additional: str, filename: str):
             return 'File serving failed', 500, {'Content-Type': 'text/plain'}
 
 def generate_speed_test_data(testsize_int):
-    import cache_manager
     sleep_time = cache_manager.get_throttled_speed()
     chunk_size = 8192  # 8KB chunks
     remaining = testsize_int
@@ -305,9 +302,10 @@ def generate_speed_test_data(testsize_int):
 @app.route('/servercmd/<command>/<additional>/<time_param>/<key>')
 @app.route('/servercmd/<command>/<time_param>/<key>', defaults={'additional': ''})
 def servercmd(command: str, additional: str, time_param: str, key: str):
+    hath_config = config_manager.Config()
+
     # Check hath_config before using it
-    hath_config = get_hath_config()
-    if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
+    if not hasattr(hath_config, 'client_id') or not hasattr(hath_config, 'client_key'):
         logger.error("Missing hath_config, client_id or client_key for remote fetch")
         return 'Internal Server Error', 500, {'Content-Type': 'text/plain'}
 
@@ -330,7 +328,6 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         return 'Invalid time parameter', 400, {'Content-Type': 'text/plain'}
 
     # Verify authentication key
-    import verification_manager
     if not verification_manager.verify_servercmd_key(command, additional, time_param, key):
         logger.warning(f"Invalid authentication key for servercmd: {command}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
@@ -430,7 +427,6 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         
         try:
             # Log current certificate status
-            import os
             cert_path = os.path.join(hath_config.data_dir, "client.crt")
             if os.path.exists(cert_path):
                 stat = os.stat(cert_path)
@@ -440,7 +436,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
             
             # Force download of new certificate
             logger.debug("Downloading new SSL certificate...")
-            success = hath_config.get_ssl_certificate(force_refresh=True)
+            success = config_manager.get_ssl_certificate(force_refresh=True)
             if success:
                 logger.info("Certificate refreshed successfully")
                 
@@ -458,9 +454,8 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
                     logger.debug("Scheduling server restart to apply new certificate...")
                     time.sleep(2)  # Give time for response to be sent
                     logger.debug("Restarting server with new certificate...")
-                    os._exit(0)  # Force exit to trigger restart (if running under supervisor/systemd)
+                    event_manager.restart_gunicorn()
                 
-                import threading
                 threading.Thread(target=restart_server, daemon=True).start()
                 
                 return "Certificate refreshed successfully. Server will restart in 2 seconds to apply new certificate.", 200, {'Content-Type': 'text/plain'}
@@ -482,10 +477,9 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         try:
             # Force download of new settings
             logger.info("Downloading new settings...")
-            success = hath_config.get_client_config(force_refresh=True)
+            success = config_manager.get_client_config(force_refresh=True)
             if success:
-                import event_manager
-                event_manager.update_logging_level()
+                logger.info("Settings refreshed successfully, you may need to restart the client.")
                 return "Settings refreshed successfully", 200, {'Content-Type': 'text/plain'}
             else:
                 logger.error("Failed to refresh settings")
@@ -497,9 +491,6 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
 
     elif command == 'start_downloader':
         logger.info("Processing start_downloader command")
-        if not hath_config:
-            logger.error("Configuration not available for downloader start")
-            return '', 200, {'Content-Type': 'text/plain'}
 
         download_manager.trigger_download()
         return '', 200, {'Content-Type': 'text/plain'}
@@ -515,7 +506,6 @@ def speed_test_endpoint(testsize: str, testtime: str, key: str, random: str = ""
     client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
 
     # Verify authentication key
-    import verification_manager
     if not verification_manager.verify_speed_test_key(testsize, testtime, key):
         logger.warning(f"Invalid authentication key for /t/ endpoint: testsize={testsize}, testtime={testtime}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
@@ -568,19 +558,22 @@ def internal_error(error):
     return "Internal Server Error", 500, {'Content-Type': 'text/plain'}
 
 def create_app():
-    """Create and configure the Flask application."""
+    '''Create and configure the Flask application.'''
+    hath_config = config_manager.Config()
+    if not config_manager.load_from_config_file():
+        logger.error('Failed to initialize configuration')
+        sys.exit(1)
 
-    logger.info(f"Process {os.getpid()}: Starting Hentai@Home Flask worker...")
+    if not hasattr(hath_config, 'client_id') or not hasattr(hath_config, 'client_key'):
+        logger.error('Client ID or Client Key not set in configuration')
+        sys.exit(1)
 
-    # Get configuration - will try to load from cache if not already initialized
-    hath_config = get_hath_config()
-    if hath_config is None:
-        logger.error("No configuration found, bail out...")
-        sys.exit()
+    if hath_config.config.get('disable_logging', False):
+        log_level = logging.WARNING
     else:
-        logger.info(f"Process {os.getpid()}: Using cached configuration from main process")
+        log_level = logging.DEBUG
 
-    logger.info(f'Process {os.getpid()}: successfully loaded configuration')
+    setup_file_logging(hath_config.log_dir if hath_config.log_dir else 'log', log_level)
+    logger.info('Hentai@Home Python Client initialized')
 
     return app
-

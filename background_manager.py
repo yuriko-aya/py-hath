@@ -13,19 +13,40 @@ import hashlib
 import os
 import sys
 import rpc_manager
-
-from config_singleton import get_hath_config
+import config_manager
 
 logger = logging.getLogger(__name__)
 
+def notify_client_start() -> bool:
+    """Notify the server that the client has started."""
+    hath_config = config_manager.Config()
+    try:
+        current_acttime = config_manager.get_current_acttime()
+        actkey = config_manager.generate_actkey("client_start")
+        url_path = (f"/15/rpc?clientbuild={hath_config.client_build}&act=client_start"
+                    f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}")
+
+        logger.debug("Notifying server that client has started...")
+        response = rpc_manager._make_rpc_request(url_path, timeout=60)
+
+        logger.debug("Server notification sent successfully")
+        logger.debug(f"Server response: {response.text.strip()}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error notifying server of client start: {e}")
+        return False
+
+
 def start_background_task():
     """Notify the server that the client has started - runs in background thread."""
+    hath_config = config_manager.Config()
+
     def wait_for_server_and_notify():
         # Wait for Flask server to be ready by checking if port is listening
         max_attempts = 30  # 30 seconds max wait
         attempts = 0
         
-        hath_config = get_hath_config()
         if not hath_config:
             logger.error("hath_config not available for notification")
             return
@@ -47,7 +68,7 @@ def start_background_task():
                 
                 if result == 0:
                     logger.debug("Server is ready, sending startup notification...")
-                    success = hath_config.notify_client_start()                    
+                    success = notify_client_start()              
                     if success:
                         hath_config.is_server_ready = True
                         deleted_blacklist = cache_manager.blacklist_process(259200)
@@ -75,19 +96,20 @@ def start_background_task():
 
 def start_periodic_task():
     """Start periodic task and still_alive notifications."""
+    hath_config = config_manager.Config()
+
     def periodic_still_alive():
         counter = 1
         while True:
             try:
                 # 2 minutes of each iterations
                 time.sleep(120)
-                hath_config = get_hath_config()
-                if not hath_config or not hath_config.client_id or not hath_config.client_key:
+                if not hath_config.client_id or not hath_config.client_key:
                     logger.error("Configuration not available for still_alive notification")
                     continue
                 
                 # Generate still_alive notification URL
-                current_acttime = hath_config.get_current_acttime()
+                current_acttime = config_manager.get_current_acttime()
                 actkey_data = f"hentai@home-still_alive--{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
                 actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
                 
@@ -125,38 +147,19 @@ def start_periodic_task():
     logger.debug("Periodic still_alive notifications started (every 2 minutes)")
 
 
-# Global flag to prevent duplicate shutdown notifications
-_shutdown_notification_sent = False
-_shutdown_lock = threading.Lock()
-
-
 def notify_client_stop():
     """Notify the server that the client is stopping."""
-    global _shutdown_notification_sent
-
-    should_notify = True
-        
-    if not should_notify:
-        logger.debug(f"Process {os.getpid()}: Skipping client_stop notification (not primary process)")
-        return
-
-    with _shutdown_lock:
-        if _shutdown_notification_sent:
-            logger.debug("Client_stop notification already sent, skipping")
-            return
-        
-        _shutdown_notification_sent = True
+    hath_config = config_manager.Config()
 
     try:
-        hath_config = get_hath_config()
-        if not hath_config or not hath_config.client_id or not hath_config.client_key:
+        if not hath_config.client_id or not hath_config.client_key:
             logger.error("Configuration not available for client_stop notification")
             return
         
         logger.info("Sending client_stop notification...")
         
         # Generate client_stop notification URL
-        current_acttime = hath_config.get_current_acttime()
+        current_acttime = config_manager.get_current_acttime()
         actkey_data = f"hentai@home-client_stop--{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
         actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
         
@@ -170,7 +173,7 @@ def notify_client_stop():
         logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
         
         # Clean up config cache when shutting down
-        hath_config.cleanup_config_cache()
+        config_manager.remove_config()
         
         # Clean up database connections
         db.cleanup_connections()
@@ -178,9 +181,7 @@ def notify_client_stop():
     except Exception as e:
         logger.error(f"Failed to send client_stop notification: {e}")
         # Still try to clean up config cache even if notification failed
-        hath_config = get_hath_config()
-        if hath_config:
-            hath_config.cleanup_config_cache()
+        config_manager.remove_config()
         # Clean up database connections
         db.cleanup_connections()
 
@@ -193,7 +194,6 @@ def setup_shutdown_handlers():
         try:
             signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
             logger.info(f"Received signal {signal_name}, shutting down gracefully...")
-            event_manager.stop_config_file_monitor()
             notify_client_stop()
         except Exception as e:
             # Avoid logging during shutdown as it might cause issues
@@ -205,7 +205,6 @@ def setup_shutdown_handlers():
     def atexit_handler():
         """Handle normal exit."""
         try:
-            event_manager.stop_config_file_monitor()
             notify_client_stop()
         except Exception:
             # Silently handle any exceptions during shutdown

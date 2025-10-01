@@ -1,6 +1,7 @@
 import requests
 import logging
 import time
+import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -8,7 +9,7 @@ requests_headers = {
     'User-Agent': 'Hentai@Home Python Client 0.2'
 }
 
-def _make_rpc_request(url_path: str, timeout: int = 10, configuration = None) -> requests.Response:
+def _make_rpc_request(url_path: str, timeout: int = 10) -> requests.Response:
     """Make RPC request with failover logic.
 
     Args:
@@ -21,11 +22,7 @@ def _make_rpc_request(url_path: str, timeout: int = 10, configuration = None) ->
     Raises:
         requests.RequestException: If all servers fail
     """
-    if configuration is not None:
-        hath_config = configuration
-    else:
-        from config_singleton import get_hath_config
-        hath_config = get_hath_config()
+    hath_config = config_manager.Config()
 
     if not hath_config:
         raise RuntimeError("HathConfig is not initialized") 
@@ -53,7 +50,7 @@ def _make_rpc_request(url_path: str, timeout: int = 10, configuration = None) ->
     max_ip_attempts = len(hath_config.rpc_server_ips)
 
     while ip_attempts < max_ip_attempts:
-        current_host = hath_config._get_rpc_host()
+        current_host = config_manager._get_rpc_host()
         url = f"http://{current_host}{url_path}"
         
         # Try the current IP up to 3 times
@@ -80,11 +77,11 @@ def _make_rpc_request(url_path: str, timeout: int = 10, configuration = None) ->
                     logger.warning(f"RPC request failed to {current_host} after {max_retries} attempts: {e}")
         
         # All retries for this IP failed, move to next IP
-        hath_config._handle_rpc_failure()
+        config_manager._handle_rpc_failure()
         ip_attempts += 1
         
         if ip_attempts < max_ip_attempts:
-            logger.debug(f"Moving to next RPC server: {hath_config._get_rpc_host()}")
+            logger.debug(f"Moving to next RPC server: {config_manager._get_rpc_host()}")
 
     # All IPs failed, try fallback domain as last resort
     logger.error("All RPC server IPs failed, trying fallback domain as last resort")

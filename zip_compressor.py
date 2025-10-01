@@ -39,8 +39,6 @@ from pathlib import Path
 
 logger = logging.getLogger('zip_compressor')
 
-log_manager.setup_file_logging()
-
 data_dir = sys.argv[1] if len(sys.argv) > 1 else None
 if data_dir is None:
     logger.error("Data directory argument is required")
