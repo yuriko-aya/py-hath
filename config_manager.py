@@ -5,6 +5,8 @@ import ipaddress
 import json
 import rpc_manager
 import settings
+import psutil
+import socket
 
 from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives import serialization
@@ -27,6 +29,7 @@ class Config:
     log_overrided = False
     override_level = 'DEBUG'
     is_server_ready = False
+    disable_ip_check = False
 
     # Client credentials and configuration
     client_id = ''
@@ -46,6 +49,18 @@ class Config:
     # Static range
     static_range_count: Optional[int] = None
     static_range: list = []
+
+def get_local_ips():
+    ips = []
+    for ifname, addrs in psutil.net_if_addrs().items():
+        if ifname == "lo":
+            continue
+        for a in addrs:
+            if a.family in (socket.AF_INET, socket.AF_INET6):
+                if a.address.startswith("127.") or a.address == "::1":
+                    continue
+                ips.append(a.address)
+    return ips
 
 def _convert_ipv6_mapped_to_ipv4(ip_list: List[str]) -> List[str]:
     """Convert IPv6-mapped IPv4 addresses to standard IPv4 format.
@@ -243,6 +258,11 @@ def get_client_config(force_refresh=False) -> bool:
 
                 Config.config[key] = value
 
+        host = Config.config.get('host')
+        local_ips = get_local_ips()
+        if host not in local_ips:
+            Config.config['host'] = '0.0.0.0'
+
         logger.info("Client configuration loaded successfully")
         logger.debug(f"Host: {Config.config.get('host')}")
         logger.debug(f"Port: {Config.config.get('port')}")
@@ -279,7 +299,7 @@ def save_config_cache() -> bool:
             'log_dir': Config.log_dir,
             'log_overrided': Config.log_overrided,
             'override_level': Config.override_level,
-
+            'disable_ip_check': Config.disable_ip_check,
         }
         
         with open(cache_file, 'w') as f:
@@ -455,6 +475,7 @@ def initialize(base_config) -> bool:
     Config.zip_downloaded = base_config.get('zip_downloaded', True)
     Config.log_overrided = base_config.get('override_log', False)
     Config.override_level = base_config.get('log_level', 'DEBUG')
+    Config.disable_ip_check = base_config.get('disable_ip_check', False)
 
 
     # Step 1: Read client credentials
@@ -504,6 +525,7 @@ def load_from_config_file():
             Config.time_difference = config_data.get('time_difference', 0)
             Config.cert_file = config_data.get('cert_file', '')
             Config.key_file = config_data.get('key_file', '')
+            Config.disable_ip_check = config_data.get('disable_ip_check', False)
             logger.info("Configuration loaded from cache file successfully")
             return True
         except json.JSONDecodeError as e:

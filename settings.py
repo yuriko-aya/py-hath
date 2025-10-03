@@ -26,3 +26,9 @@ log_dir = 'log'
 # use hath override port
 # set True if you use hath override port above
 override_port = False
+
+# disable ip check
+# do check source IP address, could be dangerous
+# normally only IP in the RPC IP list are allowed to send servercmd
+# needed when using NAT
+disable_ip_check = True
