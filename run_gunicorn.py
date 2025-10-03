@@ -38,6 +38,7 @@ def main():
         'log_level': getattr(settings, 'log_level', 'DEBUG'),
         'override_log': False,
         'config_dir': getattr(settings, 'config_dir', 'config'),
+        'disable_ip_check': getattr(settings, 'disable_ip_check', 'config'),
     }
 
     # CLI args
@@ -51,6 +52,7 @@ def main():
     parser.add_argument('--port', type=int, help='Hath port (default 443 for HTTPS)')
     parser.add_argument('--no-zip', action='store_true', help='Disable ZIP compression for downloaded galleries')
     parser.add_argument('--config-dir', help='Configuration directory')
+    parser.add_argument('--disable-ip-check', action='store_true', help='Disable source IP check')
     args = parser.parse_args()
 
     # validation
@@ -72,6 +74,8 @@ def main():
         config['hath_port'] = args.port
     if args.no_zip:
         config['zip_downloaded'] = False
+    if args.disable_ip_check:
+        config['disable_ip_check'] = True
 
     if args.log_level is not None:
         config['log_level'] = args.log_level

@@ -313,8 +313,8 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
     # Log access request
     client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
 
-    # reject if not from rpc server
-    if client_ip not in hath_config.rpc_server_ips:
+    # reject if not from rpc server and disable ip check is False
+    if not hath_config.disable_ip_check and client_ip not in hath_config.rpc_server_ips:
         logger.warning(f"Unauthorized command attempt from IP: {client_ip}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
 

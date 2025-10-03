@@ -168,9 +168,11 @@ def notify_client_stop():
             f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
         )
 
-        response = rpc_manager._make_rpc_request(url_path, timeout=10)
-
-        logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
+        if hath_config.is_server_ready:
+            response = rpc_manager._make_rpc_request(url_path, timeout=10)
+            logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
+        else:
+            logger.debug('Server is never ready. Skipping stop notification.')
         
         # Clean up config cache when shutting down
         config_manager.remove_config()
