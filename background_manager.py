@@ -31,6 +31,8 @@ def notify_client_start() -> bool:
 
         logger.debug("Server notification sent successfully")
         logger.debug(f"Server response: {response.text.strip()}")
+        if not 'OK' in response.text.strip():
+            return False
         return True
         
     except Exception as e:
@@ -70,7 +72,7 @@ def start_background_task():
                     logger.debug("Server is ready, sending startup notification...")
                     success = notify_client_start()              
                     if success:
-                        hath_config.is_server_ready = True
+                        config_manager.Config.is_server_ready = True
                         deleted_blacklist = cache_manager.blacklist_process(259200)
                         logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files") 
 
@@ -168,7 +170,7 @@ def notify_client_stop():
             f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
         )
 
-        if hath_config.is_server_ready:
+        if config_manager.Config.is_server_ready:
             response = rpc_manager._make_rpc_request(url_path, timeout=10)
             logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
         else:

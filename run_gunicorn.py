@@ -39,6 +39,8 @@ def main():
         'override_log': False,
         'config_dir': getattr(settings, 'config_dir', 'config'),
         'disable_ip_check': getattr(settings, 'disable_ip_check', 'config'),
+        'download_proxy': getattr(settings, 'download_proxy', None),
+        'rpc_proxy': getattr(settings, 'rpc_proxy', None)
     }
 
     # CLI args
@@ -53,6 +55,8 @@ def main():
     parser.add_argument('--no-zip', action='store_true', help='Disable ZIP compression for downloaded galleries')
     parser.add_argument('--config-dir', help='Configuration directory')
     parser.add_argument('--disable-ip-check', action='store_true', help='Disable source IP check')
+    parser.add_argument('--download-proxy', help='Proxy for gallery download: socks5://user:password@127.0.0.1:1080')
+    parser.add_argument('--rpc-proxy', help='Proxy for RPC requests: socks5://user:password@127.0.0.1:1080')
     args = parser.parse_args()
 
     # validation
@@ -76,6 +80,10 @@ def main():
         config['zip_downloaded'] = False
     if args.disable_ip_check:
         config['disable_ip_check'] = True
+    if args.download_proxy is not None:
+        config['download_proxy'] = args.download_proxy
+    if args.rpc_proxy is not None:
+        config['rpc_proxy'] = args.rpc_proxy
 
     if args.log_level is not None:
         config['log_level'] = args.log_level
