@@ -26,6 +26,8 @@ A robust, modular Python implementation of a Hentai@Home client that provides hi
 - **Storage Management**: Intelligent storage allocation and cleanup
 - **Comprehensive Logging**: Structured logging with rotation and multiple log levels
 - **Production Ready**: Gunicorn integration with proper worker coordination
+- **Proxy Support**: SOCKS and HTTP proxy support for downloads and RPC communication
+- **System Monitoring**: Process and system resource monitoring with psutil
 
 ## Prerequisites
 
@@ -71,12 +73,13 @@ The application requires the following Python packages:
 
 ```
 Flask>=2.3.0          # Web framework
-requests>=2.31.0      # HTTP client for server communication
+requests[socks]>=2.31.0 # HTTP client with SOCKS proxy support
 cryptography>=41.0.0  # SSL/TLS and certificate handling
 waitress>=2.1.0       # Alternative WSGI server
 gunicorn>=21.2.0      # Production WSGI server (recommended)
 watchdog>=3.0.0       # File system monitoring
 gevent==25.8.2        # Asynchronous networking library
+psutil==7.0.0         # System and process utilities
 ```
 
 All dependencies are automatically installed via `pip install -r requirements.txt`.
@@ -98,7 +101,7 @@ The application follows a clean, modular architecture with dedicated managers:
 - **`app_manager.py`**: Flask application factory and routing logic
 - **`background_manager.py`**: Background task coordination and execution
 - **`cache_manager.py`**: Cache operations and file management
-- **`config_singleton.py`**: Thread-safe configuration management
+- **`config_manager.py`**: Thread-safe configuration management
 - **`db_manager.py`**: SQLite database operations with connection pooling
 - **`download_manager.py`**: Gallery download management with automatic ZIP compression
 - **`event_manager.py`**: Centralized event system for component coordination
@@ -106,6 +109,7 @@ The application follows a clean, modular architecture with dedicated managers:
 - **`rpc_manager.py`**: Server communication and RPC handling
 - **`storage_manager.py`**: Storage allocation and cleanup operations
 - **`verification_manager.py`**: Cache integrity verification
+- **`settings.py`**: Application configuration settings and defaults
 
 ### Database Architecture
 - **SQLite with WAL mode**: High-concurrency database operations
@@ -146,6 +150,34 @@ The following files are automatically managed:
 - `.hath-background-tasks.lock` - Background task coordination
 - `client_login.example` - Example credential file format
 
+### Application Settings
+The `settings.py` file contains important configuration options:
+
+```python
+# Number of Gunicorn workers (default: 4)
+workers = 4
+
+# ZIP gallery downloads (default: True)
+zip_downloaded = True
+
+# Directory paths
+data_dir = 'data'      # SSL certificates, login file, database
+cache_dir = 'cache'    # Cached image storage
+log_dir = 'log'        # Application logs
+
+# Optional overrides (uncomment to use)
+# log_level = 'DEBUG'   # Override log level
+# hath_port = 443       # Override port from client page
+override_port = False   # Use port override
+
+# Security settings
+disable_ip_check = False  # Disable IP address validation (use with caution)
+
+# Proxy configuration (optional)
+# download_proxy = 'socks5://user:password@127.0.0.1:1080'
+# rpc_proxy = 'socks5://user:password@127.0.0.1:1080'
+```
+
 ## Usage
 
 ### Development Mode
@@ -171,11 +203,12 @@ python run_gunicorn.py
 
 ### Testing and Maintenance
 ```bash
-# Test database connectivity
-python test_check_db.py
-
 # Check application status
 curl https://localhost:your_port/
+
+# Monitor logs for troubleshooting
+tail -f log/hath_client.log
+tail -f log/hath_errors.log
 ```
 
 ### Environment Variables
@@ -184,6 +217,24 @@ export FLASK_ENV=production  # For production deployment
 export HATH_DEBUG=1         # Enable debug logging
 ```
 
+### Proxy Configuration
+The application supports proxy settings for both downloads and RPC communication. Configure in `settings.py`:
+
+```python
+# Example proxy configurations
+download_proxy = 'socks5://127.0.0.1:1080'              # SOCKS5 proxy
+download_proxy = 'http://proxy.example.com:8080'        # HTTP proxy
+download_proxy = 'socks5://user:pass@127.0.0.1:1080'    # Authenticated SOCKS5
+
+rpc_proxy = 'socks5://127.0.0.1:1080'                   # RPC proxy (separate from download)
+```
+
+Supported proxy types:
+- `http://` - HTTP proxy
+- `https://` - HTTPS proxy  
+- `socks4://` - SOCKS4 proxy
+- `socks5://` - SOCKS5 proxy (recommended)
+
 ## Directory Structure
 
 ```
@@ -191,11 +242,10 @@ py-hath/
 ├── app_manager.py           # Flask application factory and routing
 ├── background_manager.py    # Background task coordination
 ├── cache_manager.py         # Cache operations and file management
-├── config_singleton.py      # Thread-safe configuration management
+├── config_manager.py        # Thread-safe configuration management
 ├── db_manager.py           # SQLite database operations
 ├── download_manager.py     # Gallery download management with ZIP compression
 ├── event_manager.py        # Centralized event system
-├── hath_config.py          # Configuration loading and server communication
 ├── log_manager.py          # Logging configuration
 ├── rpc_manager.py          # Server RPC communication
 ├── storage_manager.py      # Storage allocation and cleanup
@@ -204,10 +254,11 @@ py-hath/
 ├── run_gunicorn.py         # Gunicorn production server launcher
 ├── wsgi.py                 # WSGI application entry point
 ├── gunicorn.conf.py        # Gunicorn configuration
-├── test_check_db.py        # Database connectivity test
+├── settings.py             # Application configuration settings
 ├── requirements.txt        # Python dependencies
 ├── LICENSE                 # GPLv3 license
 ├── .gitignore             # Git ignore rules
+├── config/                # Configuration files (auto-created)
 ├── data/                  # Configuration and certificates
 │   ├── client_login       # Client credentials (auto-created)
 │   ├── client_login.example # Example credentials file
@@ -218,7 +269,7 @@ py-hath/
 │   ├── pcache.db-shm      # SQLite shared memory (WAL mode)
 │   ├── pcache.db-wal      # SQLite write-ahead log (WAL mode)
 │   └── .hath_config_cache.json # Configuration cache
-├── cache/                 # Image cache storage
+├── cache/                 # Image cache storage (auto-created)
 │   └── [xx]/              # Hash-organized directories (e.g., 6a/, 6b/, etc.)
 │       └── [xx]/          # Secondary hash level
 │           └── [files]    # Cached image files
@@ -231,10 +282,7 @@ py-hath/
 │   ├── hath_access.log    # HTTP access logs
 │   ├── gunicorn_access.log # Gunicorn access logs
 │   └── gunicorn_error.log # Gunicorn error logs
-└── env/                   # Virtual environment (if using venv)
-    ├── bin/               # Executables
-    ├── lib/               # Python packages
-    └── include/           # Header files
+└── .git/                  # Git repository data
 ```
 
 ## API Endpoints
@@ -340,7 +388,7 @@ The application maintains comprehensive logs in the `log/` directory:
 
 ### Health Check Endpoints
 - `GET /` - Basic health check and server status
-- Database connectivity test available via `test_check_db.py`
+- Database connectivity can be verified through application logs
 
 ### Event System
 - Centralized event management for component coordination
@@ -352,9 +400,9 @@ The application maintains comprehensive logs in the `log/` directory:
 ### Common Issues
 
 1. **Database Connection Problems**: 
-   - Run `python test_check_db.py` to verify database connectivity
    - Check file permissions on `data/pcache.db*` files
    - Ensure WAL mode is supported (SQLite 3.7+)
+   - Verify database directory has write permissions
 
 2. **SSL Certificate Problems**: 
    - Certificates are automatically downloaded - check network connectivity
@@ -385,11 +433,11 @@ python run_gunicorn.py
 
 ### Database Troubleshooting
 ```bash
-# Test database connectivity
-python test_check_db.py
-
 # Check database integrity (if needed)
 sqlite3 data/pcache.db "PRAGMA integrity_check;"
+
+# Check database WAL mode
+sqlite3 data/pcache.db "PRAGMA journal_mode;"
 ```
 
 ## Development
@@ -399,9 +447,9 @@ The application follows a modular architecture with clear separation of concerns
 
 ### Core Modules
 - **`app_manager.py`**: Flask application factory with routing and request handling
-- **`config_singleton.py`**: Thread-safe configuration management using singleton pattern
+- **`config_manager.py`**: Thread-safe configuration management using singleton pattern
 - **`db_manager.py`**: SQLite database operations with connection pooling and WAL mode
-- **`hath_config.py`**: Configuration loading, validation, and server communication
+- **`settings.py`**: Application configuration settings and defaults
 
 ### Manager Modules
 - **`background_manager.py`**: Coordinates background tasks and worker processes
@@ -445,13 +493,17 @@ python run_gunicorn.py
 - Secure key management
 - Request validation and authentication
 - Protected server command interface
+- IP address validation (configurable)
+- Proxy support for network isolation
 
 ### Best Practices
 - Keep client credentials secure and up-to-date
 - Monitor logs for suspicious activity
 - Use production servers (Gunicorn) for deployment
 - Implement proper firewall rules
+- Configure proxy settings if needed for network isolation
 - Certificates are automatically managed - no manual intervention needed
+- Review and configure `settings.py` before deployment
 
 ## License
 
