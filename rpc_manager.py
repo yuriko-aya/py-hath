@@ -26,12 +26,19 @@ def _make_rpc_request(url_path: str, timeout: int = 10) -> requests.Response:
 
     if not hath_config:
         raise RuntimeError("HathConfig is not initialized") 
+    
+    proxies = {}
+    if hath_config.rpc_proxy:
+        proxies.update({
+            'http': hath_config.rpc_proxy,
+            'https': hath_config.rpc_proxy
+        })
 
     # For server_stat and server_login, always use the fallback domain
     if 'act=server_stat' in url_path or 'act=client_login' in url_path:
         url = f"http://{hath_config.rpc_fallback_domain}{url_path}"
-        logger.debug(f"Making RPC request to fallback domain: {url}")
-        response = requests.get(url, headers=requests_headers, timeout=timeout)
+        logger.debug(f"Making RPC request to fallback domain: {url} via proxy: {hath_config.rpc_proxy}")
+        response = requests.get(url, headers=requests_headers, timeout=timeout, proxies=proxies)
         response.raise_for_status()
         return response
 
@@ -39,8 +46,8 @@ def _make_rpc_request(url_path: str, timeout: int = 10) -> requests.Response:
     if not hath_config.rpc_server_ips:
         # No IP list available, use fallback domain
         url = f"http://{hath_config.rpc_fallback_domain}{url_path}"
-        logger.debug(f"No RPC IP list available, using fallback domain: {url}")
-        response = requests.get(url, headers=requests_headers, timeout=timeout)
+        logger.debug(f"No RPC IP list available, using fallback domain: {url} via proxy: {hath_config.rpc_proxy}")
+        response = requests.get(url, headers=requests_headers, timeout=timeout, proxies=proxies)
         response.raise_for_status()
         return response
 
@@ -60,11 +67,11 @@ def _make_rpc_request(url_path: str, timeout: int = 10) -> requests.Response:
         while retry_attempts < max_retries:
             try:
                 if retry_attempts == 0:
-                    logger.debug(f"Making RPC request to: {url}")
+                    logger.debug(f"Making RPC request to: {url} via proxy: {hath_config.rpc_proxy}")
                 else:
                     logger.debug(f"Retrying RPC request to {current_host} (attempt {retry_attempts + 1}/{max_retries})")
 
-                response = requests.get(url, headers=requests_headers, timeout=timeout)
+                response = requests.get(url, headers=requests_headers, timeout=timeout, proxies=proxies)
                 response.raise_for_status()
                 return response
                 

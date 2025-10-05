@@ -31,4 +31,14 @@ override_port = False
 # do check source IP address, could be dangerous
 # normally only IP in the RPC IP list are allowed to send servercmd
 # needed when using NAT
-disable_ip_check = True
+disable_ip_check = False
+
+# download proxy
+# proxy used for dowloading files from main server
+# format: 'scheme://user:password@host:port' or 'scheme://host:port'
+#download_proxy = 'socks5://user:password@127.0.0.1:1080'
+
+# rpc proxy
+# proxy used for rpc requests
+# format: 'scheme://user:password@host:port' or 'scheme://host:port'
+#rpc_proxy = 'socks5://user:password@127.0.0.1:1080'

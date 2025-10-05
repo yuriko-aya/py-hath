@@ -246,6 +246,14 @@ def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
         >>> url = "https://example.com/files/abc123-456789-image.jpg"
         >>> success = verify_and_save(hash_val, url, "/downloads/image.jpg")
     """
+    hath_config = config_manager.Config()
+    proxies = {}
+    if hath_config.download_proxy:
+        proxies.update({
+            'http': hath_config.download_proxy,
+            'https': hath_config.download_proxy
+        })
+
     file_path_obj = Path(file_path)
     file_path_obj.parent.mkdir(parents=True, exist_ok=True)
     
@@ -269,7 +277,7 @@ def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
         logger.debug(f'File already exists and valid: {file_path}')
         return True
     try:
-        response = requests.get(link, headers=requests_headers, timeout=30)
+        response = requests.get(link, headers=requests_headers, timeout=30, proxies=proxies)
         if response.status_code == 200:
             content = response.content
             logger.debug(f'Downloaded {len(content)} bytes from {link}')

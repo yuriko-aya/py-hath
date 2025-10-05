@@ -208,11 +208,18 @@ def fetch_remote_file(fileindex: str, xres: str, file_id: str):
             logger.error("No valid URL found in srfetch response")
             return False, None
         logger.debug(f"Found {len(urls)} URLs in srfetch response: {urls}")
+        proxies = {}
+        if hath_config.download_proxy:
+            proxies.update({
+                'http': hath_config.download_proxy,
+                'https': hath_config.download_proxy
+            })
+
         for url in urls:
             for attempt in range(1, 4):  # up to 3 retries per URL
                 try:
                     logger.debug(f"Attempt {attempt} - Downloading file from: {url}")
-                    file_resp = requests.get(url, headers=requests_headers, timeout=10, stream=True)
+                    file_resp = requests.get(url, headers=requests_headers, timeout=10, stream=True, proxies=proxies)
                     file_resp.raise_for_status()
                     logger.debug(f"Successfully downloaded from {url}")
                     return True, file_resp  # ✅ stop immediately after success

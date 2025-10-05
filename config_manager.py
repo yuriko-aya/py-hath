@@ -30,6 +30,8 @@ class Config:
     override_level = 'DEBUG'
     is_server_ready = False
     disable_ip_check = False
+    download_proxy = ''
+    rpc_proxy = ''
 
     # Client credentials and configuration
     client_id = ''
@@ -39,7 +41,6 @@ class Config:
     config = {}
     cert_file = ''
     key_file = ''
-    is_server_ready = False
     client_build: str = "176"  # Fixed client build version
 
     # RPC server IP list for failover (converted to standard IPv4 format)
@@ -300,6 +301,8 @@ def save_config_cache() -> bool:
             'log_overrided': Config.log_overrided,
             'override_level': Config.override_level,
             'disable_ip_check': Config.disable_ip_check,
+            'download_proxy': Config.download_proxy,
+            'rpc_proxy': Config.rpc_proxy,
         }
         
         with open(cache_file, 'w') as f:
@@ -476,7 +479,8 @@ def initialize(base_config) -> bool:
     Config.log_overrided = base_config.get('override_log', False)
     Config.override_level = base_config.get('log_level', 'DEBUG')
     Config.disable_ip_check = base_config.get('disable_ip_check', False)
-
+    Config.download_proxy = base_config.get('download_proxy')
+    Config.rpc_proxy = base_config.get('rpc_proxy')
 
     # Step 1: Read client credentials
     if not read_client_credentials(Config.data_dir):
@@ -526,6 +530,8 @@ def load_from_config_file():
             Config.cert_file = config_data.get('cert_file', '')
             Config.key_file = config_data.get('key_file', '')
             Config.disable_ip_check = config_data.get('disable_ip_check', False)
+            Config.download_proxy = config_data.get('download_proxy')
+            Config.rpc_proxy = config_data.get('rpc_proxy')
             logger.info("Configuration loaded from cache file successfully")
             return True
         except json.JSONDecodeError as e:
