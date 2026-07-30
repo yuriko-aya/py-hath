@@ -1,27 +1,32 @@
-import os
-import time
 import hashlib
 import ipaddress
 import json
-import rpc_manager
-import settings
-import psutil
+import logging
+import os
 import socket
+import time
+from datetime import datetime, timezone
+from typing import List, Optional
 
-from datetime import datetime, timedelta, timezone
+import psutil
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
-from cryptography import x509
-from typing import Dict, Optional, Tuple, Any, List
-import logging
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+import rpc_manager
+from hath.constants import CLIENT_BUILD
+from hath.paths import get_config_cache_path, get_config_dir
+
 logger = logging.getLogger(__name__)
 
+
 class Config:
+    """Process-wide configuration singleton (state stored on the class)."""
+
     data_dir = ''
     cache_dir = ''
+    download_dir = ''
+    config_dir = ''
     log_dir = ''
     override_port = False
     hath_port = 443
@@ -30,10 +35,10 @@ class Config:
     override_level = 'DEBUG'
     is_server_ready = False
     disable_ip_check = False
+    trust_x_forwarded_for = False
     download_proxy = ''
     rpc_proxy = ''
 
-    # Client credentials and configuration
     client_id = ''
     client_key = ''
     server_time = 0
@@ -41,15 +46,22 @@ class Config:
     config = {}
     cert_file = ''
     key_file = ''
-    client_build: str = "176"  # Fixed client build version
+    client_build: str = CLIENT_BUILD
 
-    # RPC server IP list for failover (converted to standard IPv4 format)
     rpc_server_ips: list = []
     rpc_fallback_domain: str = "rpc.hentaiathome.net"
 
-    # Static range
     static_range_count: Optional[int] = None
     static_range: list = []
+
+
+def get_client_ip(environ: dict) -> str:
+    """Resolve client IP for servercmd authorization."""
+    if Config.trust_x_forwarded_for:
+        forwarded = environ.get('HTTP_X_FORWARDED_FOR')
+        if forwarded:
+            return forwarded.split(',')[0].strip()
+    return environ.get('REMOTE_ADDR', 'unknown')
 
 def get_local_ips():
     ips = []
@@ -65,20 +77,20 @@ def get_local_ips():
 
 def _convert_ipv6_mapped_to_ipv4(ip_list: List[str]) -> List[str]:
     """Convert IPv6-mapped IPv4 addresses to standard IPv4 format.
-    
+
     Args:
         ip_list: List of IP addresses (may include IPv6-mapped IPv4)
-        
+
     Returns:
         List of converted IPv4 addresses
     """
     converted_ips = []
-    
+
     for ip_str in ip_list:
         try:
             # Parse the IP address
             ip_addr = ipaddress.ip_address(ip_str)
-            
+
             # Check if it's IPv6-mapped IPv4
             if ip_addr.version == 6 and ip_addr.ipv4_mapped:
                 # Convert to IPv4
@@ -92,7 +104,7 @@ def _convert_ipv6_mapped_to_ipv4(ip_list: List[str]) -> List[str]:
                 # Regular IPv6, keep as-is but warn
                 converted_ips.append(ip_str)
                 logger.warning(f"Regular IPv6 address detected: {ip_str}")
-                
+
         except (ipaddress.AddressValueError, ValueError) as e:
             logger.error(f"Invalid IP address format: {ip_str}, skipping - {e}")
             continue
@@ -107,57 +119,60 @@ def read_client_credentials(data_dir) -> bool:
     try:
         with open(client_login_path, 'r') as f:
             content = f.read().strip()
-            
+
         if '-' in content:
             client_id, client_key = content.split('-', 1)
             logger.info(f"Loaded client credentials: ID={client_id}")
             Config.client_id = client_id
             Config.client_key = client_key
+            try:
+                os.chmod(client_login_path, 0o600)
+            except OSError:
+                pass
             return True
         else:
             logger.error("Invalid format in client_login file. Expected 'id-key' format.")
             return False
-            
+
     except FileNotFoundError:
         logger.warning(f"client_login file not found in {data_dir} directory")
         logger.info("Please enter your Hentai@Home client credentials:")
-        
+
         try:
             client_id = input("Client ID: ").strip()
             client_key = input("Client Key: ").strip()
-            
+
             if not client_id or not client_key:
                 logger.error("Client ID and Client Key cannot be empty")
                 return False
-            
+
             # Validate client_id is numeric
             try:
                 int(client_id)
             except ValueError:
                 logger.error("Client ID must be numeric")
                 return False
-            
+
             # Save credentials to file
             credentials_content = f"{client_id}-{client_key}"
             with open(client_login_path, 'w') as f:
                 f.write(credentials_content)
-            
+            os.chmod(client_login_path, 0o600)
+
+            Config.client_id = client_id
+            Config.client_key = client_key
+
             logger.info(f"Credentials saved to {client_login_path}")
-            
-            # Set the credentials
-            client_id = client_id
-            client_key = client_key
-            
             logger.info(f"Loaded client credentials: ID={client_id}")
             return True
-            
+
         except KeyboardInterrupt:
             logger.error("User cancelled credential input")
             return False
         except Exception as e:
             logger.error(f"Error saving credentials: {e}")
             return False
-            
+
     except Exception as e:
         logger.error(f"Error reading client credentials: {e}")
         return False
@@ -168,7 +183,7 @@ def get_server_time() -> bool:
         local_time_before = int(time.time())
         url_path = f'/15/rpc?clientbuild={Config.client_build}&act=server_stat'
         response = rpc_manager._make_rpc_request(url_path, timeout=10)
-        
+
         # Parse key=value format
         for line in response.text.strip().split('\n'):
             if '=' in line:
@@ -182,10 +197,10 @@ def get_server_time() -> bool:
                     Config.time_difference = time_difference
                     logger.debug(f"Time difference: {time_difference} seconds")
                     return True
-                    
+
         logger.error("server_time not found in response")
         return False
-        
+
     except Exception as e:
         logger.error(f"Error getting server time: {e}")
         return False
@@ -218,14 +233,14 @@ def get_client_config(force_refresh=False) -> bool:
         response = rpc_manager._make_rpc_request(url_path, timeout=10)
 
         response_text = response.text.strip()
-        
+
         # Must have "OK" in response for success
         if "OK" not in response_text:
             logger.error(f"Server did not return OK status: {response_text}")
             return False
 
         # If disable_logging is set, but not in return, remove it from config
-        if Config.config.get('disable_logging') and not 'disable_logging' in response_text:
+        if Config.config.get('disable_logging') and 'disable_logging' not in response_text:
             Config.config.pop('disable_logging', None)
 
         # Parse key=value format for successful responses
@@ -234,7 +249,7 @@ def get_client_config(force_refresh=False) -> bool:
                 key, value = line.split('=', 1)
                 key = key.strip()
                 value = value.strip()
-                
+
                 # Handle rpc_server_ip specially
                 if key == 'rpc_server_ip':
                     # Value is semicolon-separated list of IPv6-mapped IPv4 addresses
@@ -251,7 +266,7 @@ def get_client_config(force_refresh=False) -> bool:
                     Config.static_range = static_range
                     Config.static_range_count = static_range_count
                     logger.debug(f"Parsed {static_range_count} static ranges: {static_range}")
-                
+
                 if key == 'static_range_count':
                     static_range_count = int(value)
                     Config.static_range_count = static_range_count
@@ -270,21 +285,40 @@ def get_client_config(force_refresh=False) -> bool:
         if Config.rpc_server_ips:
             logger.debug(f"RPC servers: {Config.rpc_server_ips}")
 
-        # Save configuration to cache file for worker processes
-        save_config_cache()
+        if force_refresh:
+            apply_hot_reload_settings()
 
+        save_config_cache()
         return True
-        
+
     except Exception as e:
         logger.error(f"Error getting client config: {e}")
         return False
 
+def apply_hot_reload_settings() -> None:
+    """Apply settings that can change without a full process restart."""
+    import log_manager
+
+    if Config.log_overrided:
+        level_name = Config.override_level.upper()
+    elif Config.config.get('disable_logging'):
+        level_name = 'WARNING'
+    else:
+        return
+
+    numeric_level = getattr(logging, level_name, None)
+    if isinstance(numeric_level, int):
+        logging.getLogger().setLevel(numeric_level)
+        log_manager.set_file_log_level(numeric_level)
+        logger.info(f"Hot-reloaded log level to {level_name}")
+
+
 def save_config_cache() -> bool:
     """Save current configuration to cache file for worker processes."""
     try:
-        cache_file = 'config/config.json'
-        os.mkdir('config') if not os.path.exists('config') else None
-        
+        cache_file = get_config_cache_path()
+        os.makedirs(get_config_dir(), exist_ok=True)
+
         cache_data = {
             'client_id': Config.client_id,
             'client_key': Config.client_key,
@@ -297,33 +331,38 @@ def save_config_cache() -> bool:
             'cert_file': Config.cert_file,
             'key_file': Config.key_file,
             'timestamp': time.time(),
+            'data_dir': Config.data_dir,
+            'cache_dir': Config.cache_dir,
+            'download_dir': Config.download_dir,
+            'config_dir': Config.config_dir,
             'log_dir': Config.log_dir,
             'log_overrided': Config.log_overrided,
             'override_level': Config.override_level,
             'disable_ip_check': Config.disable_ip_check,
+            'trust_x_forwarded_for': Config.trust_x_forwarded_for,
             'download_proxy': Config.download_proxy,
             'rpc_proxy': Config.rpc_proxy,
         }
-        
+
         with open(cache_file, 'w') as f:
             json.dump(cache_data, f, indent=2)
-        
+
         logger.debug(f"Configuration cached to {cache_file}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Error saving config cache: {e}")
         return False
 
 def get_ssl_certificate(force_refresh: bool = False) -> bool:
     """Get SSL certificate from remote server.
-    
+
     The certificate will be downloaded if:
     - No certificate exists
     - Existing certificate expires within 3 days
     - Existing certificate is more than one week old
     - force_refresh is True
-    
+
     Args:
         force_refresh: If True, skip validity check and force download new certificate
     """
@@ -331,30 +370,30 @@ def get_ssl_certificate(force_refresh: bool = False) -> bool:
     if not force_refresh and _check_certificate_validity():
         logger.debug("Using existing valid certificate")
         return True
-    
+
     if force_refresh:
         logger.debug("Force refresh requested, downloading new certificate...")
-    
+
     try:
         current_acttime = get_current_acttime()
         actkey = generate_actkey("get_cert")
         url_path = (f"/15/rpc?clientbuild={Config.client_build}&act=get_cert"
                     f"&add=&cid={Config.client_id}&acttime={current_acttime}&actkey={actkey}")
-        
+
         logger.debug("Downloading new SSL certificate...")
         response = rpc_manager._make_rpc_request(url_path, timeout=30)
-        
+
         # Save PKCS#12 certificate
         p12_path = os.path.join(Config.data_dir, "client.p12")
         with open(p12_path, 'wb') as f:
             f.write(response.content)
-        
+
         # Convert PKCS#12 to separate cert and key files
         _convert_p12_to_pem(p12_path)
-        
+
         logger.debug("SSL certificate downloaded and converted successfully")
         return True
-        
+
     except Exception as e:
         logger.error(f"Error getting SSL certificate: {e}")
         return False
@@ -364,27 +403,27 @@ def _convert_p12_to_pem(p12_path: str) -> None:
     try:
         with open(p12_path, 'rb') as f:
             p12_data = f.read()
-        
+
         if not Config.client_key:
             raise ValueError("Client key is required for PKCS#12 conversion")
-        
+
         # Load PKCS#12 with client_key as password
         private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
             p12_data, Config.client_key.encode()
         )
-        
+
         if not certificate:
             raise ValueError("No certificate found in PKCS#12 file")
-        
+
         if not private_key:
             raise ValueError("No private key found in PKCS#12 file")
-        
+
         # Save certificate with full chain
         cert_path = os.path.join(Config.data_dir, "client.crt")
         with open(cert_path, 'wb') as f:
             # Write the client certificate first
             f.write(certificate.public_bytes(serialization.Encoding.PEM))
-            
+
             # Write intermediate certificates to complete the chain
             if additional_certificates:
                 logger.debug(f"Adding {len(additional_certificates)} intermediate certificates to chain")
@@ -392,9 +431,9 @@ def _convert_p12_to_pem(p12_path: str) -> None:
                     f.write(intermediate_cert.public_bytes(serialization.Encoding.PEM))
             else:
                 logger.warning("No intermediate certificates found in PKCS#12 file")
-        
+
         Config.cert_file = cert_path
-        
+
         # Save private key
         key_path = os.path.join(Config.data_dir, "client.key")
         with open(key_path, 'wb') as f:
@@ -407,7 +446,7 @@ def _convert_p12_to_pem(p12_path: str) -> None:
 
         logger.debug(f"Certificate saved to: {cert_path}")
         logger.debug(f"Private key saved to: {key_path}")
-        
+
     except Exception as e:
         logger.error(f"Error converting PKCS#12 certificate: {e}")
         raise
@@ -418,7 +457,7 @@ def _check_certificate_validity() -> bool:
     try:
         cert_path = os.path.join(Config.data_dir, "client.crt")
         key_path = os.path.join(Config.data_dir, "client.key")
-        
+
         # Check if both files exist
         if not (os.path.exists(cert_path) and os.path.exists(key_path)):
             logger.debug("Certificate files not found")
@@ -429,29 +468,29 @@ def _check_certificate_validity() -> bool:
         cert_mtime = datetime.fromtimestamp(cert_stat.st_mtime)
         current_time = datetime.now()
         age_delta = current_time - cert_mtime
-        
+
         logger.debug(f"Certificate file last modified: {cert_mtime}")
         logger.debug(f"Certificate age: {age_delta.days} days, {age_delta.seconds // 3600} hours")
-        
+
         # If certificate is more than 7 days old, download new one
         if age_delta.days >= 7:
             logger.debug("Certificate is more than one week old, will download new one")
             return False
-        
+
         # Read and parse the certificate
         with open(cert_path, 'rb') as f:
             cert_data = f.read()
-        
+
         certificate = x509.load_pem_x509_certificate(cert_data)
-        
+
         # Check expiration
         expiration_date = certificate.not_valid_after_utc
         current_date = datetime.now(timezone.utc)
         days_until_expiration = (expiration_date - current_date).days
-        
+
         logger.debug(f"Certificate expires on: {expiration_date}")
         logger.debug(f"Days until expiration: {days_until_expiration}")
-        
+
         if days_until_expiration > 3:
             logger.debug("Certificate is valid, not too old, and has more than 3 days until expiration")
             Config.cert_file = cert_path
@@ -460,7 +499,7 @@ def _check_certificate_validity() -> bool:
         else:
             logger.debug("Certificate expires within 3 days, will download new one")
             return False
-            
+
     except Exception as e:
         logger.error(f"Error checking certificate validity: {e}")
         return False
@@ -472,6 +511,8 @@ def initialize(base_config) -> bool:
 
     Config.data_dir = base_config.get('data_dir', 'data')
     Config.cache_dir = base_config.get('cache_dir', 'cache')
+    Config.download_dir = base_config.get('download_dir', 'download')
+    Config.config_dir = base_config.get('config_dir', 'config')
     Config.log_dir = base_config.get('log_dir', 'log')
     Config.override_port = base_config.get('override_port', False)
     Config.hath_port = base_config.get('hath_port', 443)
@@ -479,31 +520,32 @@ def initialize(base_config) -> bool:
     Config.log_overrided = base_config.get('override_log', False)
     Config.override_level = base_config.get('log_level', 'DEBUG')
     Config.disable_ip_check = base_config.get('disable_ip_check', False)
+    Config.trust_x_forwarded_for = base_config.get('trust_x_forwarded_for', False)
     Config.download_proxy = base_config.get('download_proxy')
     Config.rpc_proxy = base_config.get('rpc_proxy')
 
     # Step 1: Read client credentials
     if not read_client_credentials(Config.data_dir):
         return False
-    
+
     # Step 2: Get server time
     if not get_server_time():
         return False
-    
+
     # Step 3: Get client configuration
     if not get_client_config():
         return False
-    
+
     # Step 4: Get SSL certificate
     if not get_ssl_certificate():
         return False
-    
+
     logger.debug("Configuration initialization completed successfully")
     return True
 
 
 def load_from_config_file():
-    cache_file = 'config/config.json'
+    cache_file = get_config_cache_path()
     if not os.path.exists(cache_file):
         logger.error("Configuration cache file not found")
         return False
@@ -513,6 +555,8 @@ def load_from_config_file():
             config_data = json.load(f)
             Config.data_dir = config_data.get('data_dir', 'data')
             Config.cache_dir = config_data.get('cache_dir', 'cache')
+            Config.download_dir = config_data.get('download_dir', 'download')
+            Config.config_dir = config_data.get('config_dir', 'config')
             Config.log_dir = config_data.get('log_dir', 'log')
             Config.override_port = config_data.get('override_port', False)
             Config.hath_port = config_data.get('hath_port', 443)
@@ -530,6 +574,7 @@ def load_from_config_file():
             Config.cert_file = config_data.get('cert_file', '')
             Config.key_file = config_data.get('key_file', '')
             Config.disable_ip_check = config_data.get('disable_ip_check', False)
+            Config.trust_x_forwarded_for = config_data.get('trust_x_forwarded_for', False)
             Config.download_proxy = config_data.get('download_proxy')
             Config.rpc_proxy = config_data.get('rpc_proxy')
             logger.info("Configuration loaded from cache file successfully")
@@ -540,7 +585,7 @@ def load_from_config_file():
 
 def remove_config():
     """Remove the configuration cache file."""
-    cache_file = 'config/config.json'
+    cache_file = get_config_cache_path()
     try:
         if os.path.exists(cache_file):
             os.remove(cache_file)

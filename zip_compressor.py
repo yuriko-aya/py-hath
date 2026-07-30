@@ -7,17 +7,17 @@ to run as a separate process to avoid blocking the main download manager.
 
 The script processes a single gallery directory and:
 - Creates a ZIP file with the same name as the directory
-- Compresses all files within the directory recursively  
+- Compresses all files within the directory recursively
 - Removes the original directory after successful compression
 - Logs all operations for debugging and monitoring
 - Skips compression if ZIP file already exists and is non-empty
 
 Usage:
     python zip_compressor.py <gallery_directory_path>
-    
+
 Example:
     python zip_compressor.py "/downloads/Gallery Title [12345-1280x]"
-    
+
 Features:
 - Uses ZIP_DEFLATED compression for optimal file size
 - Maintains directory structure within ZIP files
@@ -30,11 +30,9 @@ Version: 0.2
 """
 
 import logging
-import zipfile
-import log_manager
-import sys
 import shutil
-
+import sys
+import zipfile
 from pathlib import Path
 
 logger = logging.getLogger('zip_compressor')

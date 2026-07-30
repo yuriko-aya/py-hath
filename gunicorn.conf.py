@@ -1,26 +1,25 @@
+import os
+
 import gunicorn
-import logging
-import ssl
-import sys
 
 gunicorn.SERVER = 'Genetic Lifeform and Distributed Open Server 0.1-py '
 
-# Workers
-workers = 4
-worker_class = "gevent"
+workers = int(os.environ.get('HATH_WORKERS', '4'))
+worker_class = os.environ.get('HATH_WORKER_CLASS', 'sync')
 
-# Connections
 timeout = 30
 keepalive = 0
 
-# Restart workers after a certain number of requests
 max_requests = 1000
 max_requests_jitter = 100
 
-# Logging
-accesslog = "log/gunicorn_access.log"
-errorlog = "log/gunicorn_error.log"
-loglevel = "info"
+accesslog = os.environ.get('HATH_ACCESSLOG', 'log/gunicorn_access.log')
+errorlog = os.environ.get('HATH_ERRORLOG', 'log/gunicorn_error.log')
+loglevel = os.environ.get('HATH_LOGLEVEL', 'info')
+pidfile = os.environ.get('HATH_PIDFILE', 'config/gunicorn.pid')
 
-# SSL/TLS
+bind = os.environ.get('HATH_BIND', '0.0.0.0:443')
+certfile = os.environ.get('HATH_CERTFILE')
+keyfile = os.environ.get('HATH_KEYFILE')
+
 ciphers = "ECDHE+AESGCM:ECDHE+CHACHA20:!aNULL:!MD5:!DSS"

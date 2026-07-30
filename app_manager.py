@@ -1,31 +1,32 @@
-import logging
 import hashlib
-import time
-import random
-import requests
-import os
+import logging
 import mimetypes
+import os
+import random
 import shutil
 import sys
-import download_manager
-import db_manager
-import config_manager
-import verification_manager
-import cache_manager
-import event_manager
 import threading
-
-from pathlib import Path
+import time
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, g, jsonify, request, Response, send_file, redirect, url_for
-from log_manager import setup_file_logging
+from pathlib import Path
+
+from flask import Flask, Response, g, jsonify, redirect, request, send_file
 from werkzeug.test import EnvironBuilder
 
-logger = logging.getLogger(__name__)
+import cache_manager
+import config_manager
+import db_manager
+import download_manager
+import event_manager
+import storage_manager
+import verification_manager
+from hath.http_client import get
+from hath.metrics import record_cache_hit, record_cache_miss
+from hath.metrics import snapshot as metrics_snapshot
+from hath.paths import cache_file_path
+from log_manager import setup_file_logging
 
-requests_headers = {
-    'User-Agent': 'Hentai@Home Python Client 0.3'
-}
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -44,17 +45,16 @@ def handle_double_slash_in_servercmd():
                 # Redirect to the route with defaults (no additional parameter)
                 command, time_param, key = parts[1], parts[2], parts[3]
                 # Generate new request to the proper endpoint
-                
+
                 # Create a new request with the corrected path
                 builder = EnvironBuilder(path=corrected_path, method=request.method)
-                new_request = builder.get_request()
-                
+                builder.get_request()
+
                 # Call our servercmd function directly with empty additional
                 return servercmd(command, '', time_param, key)
 
 @app.after_request
 def after_request(response):
-    """Log the duration of the request."""
     """Log the duration of the request."""
     duration = time.perf_counter() - g.start_time
     length = response.headers.get('Content-Length')
@@ -83,6 +83,41 @@ def index():
     """Basic health check endpoint."""
     return 'Hentai@Home Python Client', {'Content-Type': 'text/plain'}
 
+
+@app.route('/health')
+def health():
+    """Readiness probe with DB, disk, certificate, and metrics checks."""
+    from datetime import datetime, timezone
+
+    from cryptography import x509
+
+    hath_config = config_manager.Config()
+    checks = {
+        'database': bool(db_manager.get_cache_stats() is not None),
+        'disk': storage_manager.is_disk_ok(),
+    }
+
+    cert_ok = False
+    cert_expires = None
+    cert_path = getattr(hath_config, 'cert_file', None)
+    if cert_path and os.path.exists(cert_path):
+        try:
+            with open(cert_path, 'rb') as f:
+                cert = x509.load_pem_x509_certificate(f.read())
+            cert_expires = cert.not_valid_after_utc.isoformat()
+            cert_ok = cert.not_valid_after_utc > datetime.now(timezone.utc)
+        except Exception as e:
+            logger.warning(f"Certificate health check failed: {e}")
+    checks['certificate'] = cert_ok
+
+    healthy = all(checks.values())
+    return jsonify({
+        'status': 'ok' if healthy else 'degraded',
+        'checks': checks,
+        'certificate_expires': cert_expires,
+        'metrics': metrics_snapshot(),
+    }), 200 if healthy else 503
+
 def parse_additional_params(additional: str) -> dict:
     """Parse additional parameters from key=value;key=value format."""
     params = {}
@@ -108,22 +143,70 @@ def status(actkey: str):
 
     try:
         cache_status = db_manager.get_cache_stats()
-        return jsonify({"status": "ok", "cache": cache_status})
+        return jsonify({
+            "status": "ok",
+            "cache": cache_status,
+            "metrics": metrics_snapshot(),
+            "download": {
+                "active": metrics_snapshot().get("download_active", False),
+                "last_error": metrics_snapshot().get("download_last_error", ""),
+                "galleries_completed": metrics_snapshot().get("download_galleries_completed", 0),
+            },
+        })
     except Exception as e:
         logger.error(f"Error fetching cache status: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+def _content_type_for(filename: str, file_id: str) -> str:
+    if 'wbp' in filename or '-wbp' in file_id:
+        return 'image/webp'
+    content_type, _ = mimetypes.guess_type(filename)
+    return content_type or 'application/octet-stream'
+
+
+def _response_headers() -> dict:
+    return {'Cache-Control': 'public, max-age=31536000'}
+
+
+def _fetch_and_serve_remote(file_path: str, file_id: str, fileindex: str, xres: str,
+                            static_name: str, filename: str, *, info_log: bool = False):
+    """Download missing or invalid cache file and stream to client while caching."""
+    record_cache_miss()
+    success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
+    if not success or not file_resp:
+        return "File not found", 404, {'Content-Type': 'text/plain'}
+
+    content_type = _content_type_for(filename, file_id)
+    if 'Content-Length' in file_resp.headers:
+        file_size = int(file_resp.headers['Content-Length'])
+    else:
+        file_size = 0
+
+    log_fn = logger.info if info_log else logger.debug
+    if file_size:
+        log_fn(f"Streaming {file_size / 1024:.2f} kB file: {file_id} as {content_type}")
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    headers = _response_headers()
+    if file_size:
+        headers['Content-Length'] = str(file_size)
+
+    return Response(
+        cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
+        mimetype=content_type,
+        headers=headers,
+    )
+
+
 @app.route('/h/<file_id>/<additional>/<filename>')
 def serve_file(file_id: str, additional: str, filename: str):
     """Serve cached files with authentication."""
-    # Parse additional parameters
     params = parse_additional_params(additional)
 
     keystamp = params.get('keystamp', '')
     fileindex = params.get('fileindex', '')
     xres = params.get('xres', '')
 
-    # Extract expected hash from keystamp
     if '-' not in keystamp:
         logger.warning(f"Invalid keystamp format: {keystamp}")
         return 'Invalid keystamp format', 400, {'Content-Type': 'text/plain'}
@@ -134,155 +217,60 @@ def serve_file(file_id: str, additional: str, filename: str):
         logger.warning(f"Could not parse keystamp: {keystamp}")
         return 'Invalid keystamp format', 400, {'Content-Type': 'text/plain'}
 
-    # Verify authentication
     if not verification_manager.verify_h_endpoint_auth(keystamp_time, expected, file_id):
         logger.warning(f"Authentication failed for file: {file_id}")
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
 
-    # Validate fileindex
     if not fileindex:
         logger.warning(f"Missing fileindex for file: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
 
     try:
-        fileindex_int = int(fileindex)
+        int(fileindex)
     except ValueError:
         logger.warning(f"Invalid fileindex format: {fileindex}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
 
-    # Validate xres
     if xres != 'org' and not xres.isdigit():
         logger.warning(f"Invalid xres value: {xres}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
 
-    # Check if file exists
     if len(file_id) < 2:
         logger.warning(f"File ID too short: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
 
     static_name = file_id[:4]
-    l1dir = file_id[:2]
-    l2dir = file_id[2:4]
-    file_path = os.path.join('cache', l1dir, l2dir, file_id)
-
-    # Response headers
-    response_headers = {
-        'Cache-Control': 'public, max-age=31536000',
-    }
-
-    # Determine content type
-    if 'wbp' in filename or '-wbp' in file_id:
-        content_type = 'image/webp'
-    else:
-        content_type, _ = mimetypes.guess_type(filename)
-        if not content_type:
-            content_type = 'application/octet-stream'
+    file_path = cache_file_path(file_id)
+    content_type = _content_type_for(filename, file_id)
 
     if not os.path.exists(file_path) or not os.path.isfile(file_path):
         logger.debug(f"File not found locally: {file_path}, attempting remote fetch...")
         if os.path.exists(file_path) and os.path.isdir(file_path):
             shutil.rmtree(file_path)
-        # Prepare remote fetch URL
-        success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
-        if success and file_resp:
-            # Save to cache and stream to client simultaneously
-            if 'Content-Length' in file_resp.headers:
-                file_size = int(file_resp.headers['Content-Length'])
-            else:
-                file_size = len(file_resp.content)
-            file_size_kb = file_size / 1024
-            logger.debug(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
-
-            content = file_resp.content
-
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-            with open(file_path, 'wb') as f:
-                f.write(content)
-
-            logger.debug(f"File cached at: {file_path}")
-            db_manager.update_last_access(static_name, new_file=True)
-            db_manager.update_file_size(file_size)
-
-            response_headers.update({
-                'Content-Length': str(file_size),
-            })
-
-            return Response(
-                content,
-                mimetype=content_type,
-                headers=response_headers
-            )
-
-            # return Response(
-            #     cache_manager.generate_and_cache(file_path, file_id, file_resp, file_size),
-            #     mimetype=content_type,
-            #     headers=response_headers
-            # )
-        else:
-            return "File not found", 404, {'Content-Type': 'text/plain'}
+        return _fetch_and_serve_remote(
+            file_path, file_id, fileindex, xres, static_name, filename,
+        )
 
     if not cache_manager.verify_file_integrity(file_path, file_id):
         os.remove(file_path)
-        # Prepare remote fetch URL
-        success, file_resp = cache_manager.fetch_remote_file(fileindex, xres, file_id)
-        if success and file_resp:
-            # Save to cache and stream to client simultaneously
-            if 'Content-Length' in file_resp.headers:
-                file_size = int(file_resp.headers['Content-Length'])
-            else:
-                file_size = len(file_resp.content)
-            file_size_kb = file_size / 1024
-            logger.info(f"Streaming {file_size_kb:.2f} kB file: {file_id} as {content_type}")
+        return _fetch_and_serve_remote(
+            file_path, file_id, fileindex, xres, static_name, filename, info_log=True,
+        )
 
-            content = file_resp.content
-
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-            with open(file_path, 'wb') as f:
-                f.write(content)
-
-            logger.debug(f"File cached at: {file_path}")
-            db_manager.update_last_access(static_name, new_file=True)
-            db_manager.update_file_size(file_size)
-
-            response_headers.update({
-                'Content-Length': str(file_size),
-            })
-
-            return Response(
-                content,
-                mimetype=content_type,
-                headers=response_headers
-            )
-
-        else:
-            return "File not found", 404, {'Content-Type': 'text/plain'}
-
-    else:
-        try:
-            # Update last access time for cache tracking
-            file_size = Path(file_path).stat().st_size
-            file_size_kb = file_size / 1024
-            logger.info(f"Serving {file_size_kb:.2f} kB file: {file_path} as {content_type}")
-            db_manager.update_last_access(static_name)
-
-            with open(file_path, 'rb') as f:
-                content = f.read()
-
-            response_headers.update({
-                'Content-Length': str(file_size),
-            })
-
-            return Response(
-                content,
-                mimetype=content_type,
-                headers=response_headers
-            )
-            
-        except Exception as e:
-            logger.error(f"Error serving file {file_path}: {e}")
-            return 'File serving failed', 500, {'Content-Type': 'text/plain'}
+    try:
+        file_size = Path(file_path).stat().st_size
+        logger.info(f"Serving {file_size / 1024:.2f} kB file: {file_path} as {content_type}")
+        db_manager.update_last_access(static_name)
+        record_cache_hit(file_size)
+        return send_file(
+            file_path,
+            mimetype=content_type,
+            conditional=True,
+            max_age=31536000,
+        )
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        return 'File serving failed', 500, {'Content-Type': 'text/plain'}
 
 def generate_speed_test_data(testsize_int):
     sleep_time = cache_manager.get_throttled_speed()
@@ -310,8 +298,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         return 'Internal Server Error', 500, {'Content-Type': 'text/plain'}
 
     """Handle server commands with authentication."""
-    # Log access request
-    client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
+    client_ip = config_manager.get_client_ip(request.environ)
 
     # reject if not from rpc server and disable ip check is False
     if not hath_config.disable_ip_check and client_ip not in hath_config.rpc_server_ips:
@@ -349,10 +336,10 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
             testsize = int(testsize_str)
             if testsize < 0 or testsize > 100 * 1024 * 1024:  # Limit to 100MB
                 return 'Invalid testsize', 400, {'Content-Type': 'text/plain'}
-            
+
             # Generate actual data for speed test
             logger.debug(f"Processing speed_test command with testsize: {testsize}")
-            
+
             return Response(
                 generate_speed_test_data(testsize),
                 status=200,
@@ -361,7 +348,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
                     'Content-Length': str(testsize)
                 }
             )
-            
+
         except ValueError:
             return 'Invalid testsize format', 400, {'Content-Type': 'text/plain'}
 
@@ -374,14 +361,14 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
         testtime = params.get('testtime', '10')
         testkey = params.get('testkey', 'default')
         testcount_str = params.get('testcount', '1')
-        
+
         try:
             testcount = int(testcount_str)
             if testcount <= 0 or testcount > 100:  # Limit concurrent requests
                 return 'Invalid testcount (1-100)', 400, {'Content-Type': 'text/plain'}
-                
+
             logger.info(f"Processing threaded_proxy_test with {testcount} concurrent requests")
-            
+
             # Function to make a single request
             def make_request():
                 try:
@@ -389,29 +376,29 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
                     url = f"{scheme}://{hostname}:{port}/t/{testsize}/{testtime}/{testkey}/{random_val}"
                     logger.debug(f"Making request to: {url}")
                     start_time = time.time()
-                    response = requests.get(url, headers=requests_headers, timeout=30)
+                    response = get(url, timeout=30)
                     end_time = time.time()
-                    
+
                     return end_time - start_time, response.status_code == 200
                 except Exception as e:
                     logger.error(f"Request failed: {e}")
                     return 0, False
-            
+
             # Execute concurrent requests
             start_total = time.time()
             with ThreadPoolExecutor(max_workers=testcount) as executor:
                 futures = [executor.submit(make_request) for _ in range(testcount)]
                 results = [future.result() for future in futures]
             end_total = time.time()
-            
+
             total_time = end_total - start_total
             total_time_ms = int(total_time * 1000)  # Convert to milliseconds
             successful_requests = sum(1 for _, success in results if success)
-            
+
             logger.info(f"Threaded proxy test completed: {successful_requests}/{testcount} successful in {total_time:.2f}s ({total_time_ms}ms)")
-            
+
             return f"OK:{successful_requests}-{total_time_ms}", 200, {'Content-Type': 'text/plain'}
-            
+
         except ValueError:
             return 'Invalid testcount format', 400, {'Content-Type': 'text/plain'}
         except Exception as e:
@@ -420,11 +407,11 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
 
     elif command == 'refresh_cert':
         logger.info("Processing refresh_cert command")
-        
+
         if not hath_config:
             logger.error("Configuration not available for certificate refresh")
             return "FAIL: Configuration not available", 500, {'Content-Type': 'text/plain'}
-        
+
         try:
             # Log current certificate status
             cert_path = os.path.join(hath_config.data_dir, "client.crt")
@@ -433,58 +420,59 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
                 logger.debug(f"Current certificate last modified: {time.ctime(stat.st_mtime)}")
             else:
                 logger.warning("No existing certificate found")
-            
+
             # Force download of new certificate
             logger.debug("Downloading new SSL certificate...")
             success = config_manager.get_ssl_certificate(force_refresh=True)
             if success:
                 logger.info("Certificate refreshed successfully")
-                
+
                 # Verify new certificate was created
                 if os.path.exists(cert_path):
                     new_stat = os.stat(cert_path)
                     logger.debug(f"New certificate created: {time.ctime(new_stat.st_mtime)}")
-                
+
                 # Update Flask config with new certificate paths
                 hath_config.cert_file = os.path.join(hath_config.data_dir, "client.crt")
                 hath_config.key_file = os.path.join(hath_config.data_dir, "client.key")
-                
+
                 # Schedule server restart in a separate thread
                 def restart_server():
                     logger.debug("Scheduling server restart to apply new certificate...")
                     time.sleep(2)  # Give time for response to be sent
                     logger.debug("Restarting server with new certificate...")
                     event_manager.restart_gunicorn()
-                
+
                 threading.Thread(target=restart_server, daemon=True).start()
-                
+
                 return "Certificate refreshed successfully. Server will restart in 2 seconds to apply new certificate.", 200, {'Content-Type': 'text/plain'}
             else:
                 logger.error("Failed to refresh certificate")
                 return "FAIL: Certificate refresh failed", 500, {'Content-Type': 'text/plain'}
-                
+
         except Exception as e:
             logger.error(f"Certificate refresh error: {e}")
             return f"FAIL: Certificate refresh failed - {str(e)}", 500, {'Content-Type': 'text/plain'}
-        
+
     elif command == 'refresh_settings':
         logger.info("Processing refresh_settings command")
-        
+
         if not hath_config:
             logger.error("Configuration not available for settings refresh")
             return "FAIL: Configuration not available", 500, {'Content-Type': 'text/plain'}
-        
+
         try:
             # Force download of new settings
             logger.info("Downloading new settings...")
             success = config_manager.get_client_config(force_refresh=True)
             if success:
-                logger.info("Settings refreshed successfully, you may need to restart the client.")
-                return "Settings refreshed successfully", 200, {'Content-Type': 'text/plain'}
+                config_manager.apply_hot_reload_settings()
+                logger.info("Settings refreshed successfully")
+                return "Settings refreshed successfully (log level applied if overridden)", 200, {'Content-Type': 'text/plain'}
             else:
                 logger.error("Failed to refresh settings")
                 return "FAIL: Settings refresh failed", 500, {'Content-Type': 'text/plain'}
-                
+
         except Exception as e:
             logger.error(f"Settings refresh error: {e}")
             return f"FAIL: Settings refresh failed - {str(e)}", 500, {'Content-Type': 'text/plain'}
@@ -503,7 +491,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
 def speed_test_endpoint(testsize: str, testtime: str, key: str, random: str = ""):
     """Speed test endpoint with optional random parameter."""
     # Log access request
-    client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
+    request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
 
     # Verify authentication key
     if not verification_manager.verify_speed_test_key(testsize, testtime, key):
@@ -532,7 +520,7 @@ def speed_test_endpoint(testsize: str, testtime: str, key: str, random: str = ""
                 'Content-Length': str(testsize_int)
             }
         )
-        
+
     except ValueError:
         return 'Invalid testsize format', 400, {'Content-Type': 'text/plain'}
     except Exception as e:

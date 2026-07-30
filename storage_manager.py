@@ -1,16 +1,18 @@
+import logging
 import os
 import shutil
-import config_manager
 
-import logging
+import config_manager
+from hath.paths import get_cache_dir
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_FREE_BYTES = 1073741824
 
+
 def is_disk_ok():
     '''
-    Check if there is enough free disk space in the 'cache' directory,
+    Check if there is enough free disk space in the cache directory,
     using the minimum threshold from hath_config (diskremaining_bytes).
     If not set, default to 1GB.
     '''
@@ -27,7 +29,7 @@ def is_disk_ok():
         logger.error(f'Invalid diskremaining_bytes value in config: {config_min_free!r}; using default ({DEFAULT_MIN_FREE_BYTES} bytes)')
         min_free = DEFAULT_MIN_FREE_BYTES
 
-    cache_dir = 'cache'
+    cache_dir = get_cache_dir()
     if not os.path.exists(cache_dir):
         logger.warning(f'Cache directory {cache_dir} does not exist, creating it.')
         os.makedirs(cache_dir, exist_ok=True)

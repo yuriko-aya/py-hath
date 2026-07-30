@@ -1,31 +1,28 @@
-import db_manager as db
+import hashlib
 import logging
 import os
 import shutil
-import hashlib
-import requests
 import time
-import rpc_manager
-import config_manager
-
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import config_manager
+import db_manager as db
+import rpc_manager
+from hath.http_client import get
+from hath.paths import cache_file_path, cache_range_dir, get_cache_dir
+
 logger = logging.getLogger(__name__)
-requests_headers = {
-    'User-Agent': 'Hentai@Home Python Client 0.2'
-}
+
 
 def delete_static_range(static_range: str):
     '''Delete static range and all file inside it'''
-    l1dir = static_range[:2]
-    l2dir = static_range[2:4]
-    dir_path = os.path.join('cache', l1dir, l2dir)
+    dir_path = cache_range_dir(static_range)
     if not os.path.exists(dir_path) or not os.path.isdir(dir_path):
         logger.warning(f"Directory for static range {static_range} does not exist: {dir_path}")
         db.remove_static_range(static_range)
         return
-    files = [p for p in Path(dir_path).glob(f'*') if p.is_file()]
+    files = [p for p in Path(dir_path).glob('*') if p.is_file()]
     for file in files:
         file_size = file.stat().st_size
         db.update_file_count(static_range, removal=True)
@@ -42,7 +39,7 @@ def cache_validation(force_rescan=False):
         return False
 
     try:
-        cache_dir = 'cache'
+        cache_dir = get_cache_dir()
         static_range = hath_config.static_range
         if not static_range or len(static_range) == 0:
             logger.debug("No static range defined, skipping cache validation")
@@ -53,7 +50,6 @@ def cache_validation(force_rescan=False):
             local_static_range = db.get_static_range_list()
             if len(local_static_range) == 0:
                 logger.warning("Database is empty... rescanning...")
-                missing_db = True
             elif set(local_static_range).issubset(set(static_range)):
                 logger.info("All static ranges in database are in the given list, skipping cache validation")
                 return True # All prefixes are valid
@@ -96,16 +92,16 @@ def cache_validation(force_rescan=False):
                     # File is in static range, keep it
                     db.update_file_count(static_name)
                     db.update_file_size(file.stat().st_size)
-                
+
                 verified_count += 1
                 verified_percent = (verified_count / file_count) * 100
-                
+
             logger.info("Cache validation completed successfully")
             if deleted_count > 0:
                 logger.warning(f"Deleted {deleted_count} files outside of static range")
-        
+
         return True
-        
+
     except OSError as e:
         logger.error(f"Error accessing cache directory: {e}")
         return False
@@ -140,14 +136,12 @@ def blacklist_process(timespan: int):
         for line in resp.text.splitlines():
             if '-' in line:
                 static_range = line[:4]
-                l1dir = line[:2]
-                l2dir = line[2:4]
-                file_path = os.path.join('cache', l1dir, l2dir, line)
+                file_path = cache_file_path(line)
                 if os.path.exists(file_path):
                     file_size = Path(file_path).stat().st_size
                     os.remove(file_path)
                     db.update_file_count(static_range, removal=True)
-                    db.update_file_size(file_size, removal=True)    
+                    db.update_file_size(file_size, removal=True)
                     delete_count += 1
 
     return delete_count
@@ -216,13 +210,13 @@ def fetch_remote_file(fileindex: str, xres: str, file_id: str):
             })
 
         for url in urls:
-            for attempt in range(1, 4):  # up to 3 retries per URL
+            for attempt in range(1, 4):
                 try:
                     logger.debug(f"Attempt {attempt} - Downloading file from: {url}")
-                    file_resp = requests.get(url, headers=requests_headers, timeout=10, stream=True, proxies=proxies)
+                    file_resp = get(url, timeout=10, stream=True, proxies=proxies or None)
                     file_resp.raise_for_status()
                     logger.debug(f"Successfully downloaded from {url}")
-                    return True, file_resp  # ✅ stop immediately after success
+                    return True, file_resp
                 except Exception as e:
                     logger.error(f"Attempt {attempt} - Failed to download {url}: {e}")
             logger.error(f"Max retries reached for {url}")
@@ -276,7 +270,13 @@ def generate_and_cache(file_path, file_id, file_resp, file_size):
         if success:
             logger.debug(f"File cached at: {file_path}")
             db.update_last_access(static_name, new_file=True)
-            db.update_file_size(file_size)
+            if not file_size:
+                try:
+                    file_size = os.path.getsize(file_path)
+                except OSError:
+                    file_size = 0
+            if file_size:
+                db.update_file_size(file_size)
 
 def serve_from_file(file_path, file_id):
     sleep_time = get_throttled_speed()

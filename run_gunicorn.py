@@ -1,49 +1,85 @@
 #!/usr/bin/env python3
 '''
 Run the Hentai@Home Flask client using Gunicorn WSGI server
-
-This is the recommended way to deploy the H@H client in production.
-Uses the virtual environment's gunicorn with proper SSL configuration.
-
-Usage:
-    python run_gunicorn.py
-
-Features:
-- Virtual environment integration
-- SSL/TLS 1.2 and 1.3 support
-- Multi-process coordination
-- Proper certificate handling
-- Production-ready configuration
 '''
 import argparse
-import os
-import sys
 import logging
+import os
 import subprocess
+import sys
+
+import config_manager
 import db_manager as db
 import log_manager
 import settings
-import config_manager
+from hath.validation import validate_startup_config
 
-def main():
-    # defaults + settings.py
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, '').strip().lower() in ('1', 'true', 'yes')
+
+
+def _build_config(args) -> dict:
     config = {
         'workers': getattr(settings, 'workers', 4),
+        'worker_class': getattr(settings, 'worker_class', 'sync'),
         'zip_downloaded': getattr(settings, 'zip_downloaded', True),
         'data_dir': getattr(settings, 'data_dir', 'data'),
         'cache_dir': getattr(settings, 'cache_dir', 'cache'),
+        'download_dir': getattr(settings, 'download_dir', 'download'),
         'log_dir': getattr(settings, 'log_dir', 'log'),
+        'config_dir': getattr(settings, 'config_dir', 'config'),
         'override_port': getattr(settings, 'override_port', False),
         'hath_port': getattr(settings, 'hath_port', 443),
-        'log_level': getattr(settings, 'log_level', 'DEBUG'),
+        'log_level': getattr(settings, 'log_level', None),
         'override_log': False,
-        'config_dir': getattr(settings, 'config_dir', 'config'),
-        'disable_ip_check': getattr(settings, 'disable_ip_check', 'config'),
+        'disable_ip_check': getattr(settings, 'disable_ip_check', False),
+        'trust_x_forwarded_for': getattr(settings, 'trust_x_forwarded_for', False),
         'download_proxy': getattr(settings, 'download_proxy', None),
-        'rpc_proxy': getattr(settings, 'rpc_proxy', None)
+        'rpc_proxy': getattr(settings, 'rpc_proxy', None),
+        'json_logs': getattr(settings, 'json_logs', False),
     }
 
-    # CLI args
+    if _env_flag('HATH_DEBUG'):
+        config['log_level'] = 'DEBUG'
+        config['override_log'] = True
+
+    if args.workers is not None:
+        config['workers'] = args.workers
+    if args.log_dir is not None:
+        config['log_dir'] = args.log_dir
+    if args.data_dir is not None:
+        config['data_dir'] = args.data_dir
+    if args.cache_dir is not None:
+        config['cache_dir'] = args.cache_dir
+    if args.config_dir is not None:
+        config['config_dir'] = args.config_dir
+    if args.override_port:
+        config['override_port'] = True
+    if args.port is not None:
+        config['hath_port'] = args.port
+    if args.no_zip:
+        config['zip_downloaded'] = False
+    if args.disable_ip_check:
+        config['disable_ip_check'] = True
+    if args.trust_x_forwarded_for:
+        config['trust_x_forwarded_for'] = True
+    if args.download_proxy is not None:
+        config['download_proxy'] = args.download_proxy
+    if args.rpc_proxy is not None:
+        config['rpc_proxy'] = args.rpc_proxy
+    if args.log_level is not None:
+        config['log_level'] = args.log_level
+
+    if config['log_level'] is not None:
+        config['override_log'] = True
+    elif config['log_level'] is None:
+        config['log_level'] = 'DEBUG'
+
+    return config
+
+
+def main():
     parser = argparse.ArgumentParser(description='Run Hentai@Home client with Gunicorn')
     parser.add_argument('--workers', type=int, help='Number of Gunicorn worker processes')
     parser.add_argument('--log-level', help='Logging level (DEBUG, INFO, WARNING, ERROR)')
@@ -55,64 +91,38 @@ def main():
     parser.add_argument('--no-zip', action='store_true', help='Disable ZIP compression for downloaded galleries')
     parser.add_argument('--config-dir', help='Configuration directory')
     parser.add_argument('--disable-ip-check', action='store_true', help='Disable source IP check')
-    parser.add_argument('--download-proxy', help='Proxy for gallery download: socks5://user:password@127.0.0.1:1080')
-    parser.add_argument('--rpc-proxy', help='Proxy for RPC requests: socks5://user:password@127.0.0.1:1080')
+    parser.add_argument('--trust-x-forwarded-for', action='store_true', help='Trust X-Forwarded-For for servercmd IP checks')
+    parser.add_argument('--download-proxy', help='Proxy for gallery download')
+    parser.add_argument('--rpc-proxy', help='Proxy for RPC requests')
     args = parser.parse_args()
 
-    # validation
     if args.override_port and args.port is None:
         parser.error('--override-port requires --port to be set')
 
-    # apply overrides
-    if args.workers is not None:
-        config['workers'] = args.workers
-    if args.log_dir is not None:
-        config['log_dir'] = args.log_dir
-    if args.data_dir is not None:
-        config['data_dir'] = args.data_dir
-    if args.cache_dir is not None:
-        config['cache_dir'] = args.cache_dir
-    if args.override_port:
-        config['override_port'] = True
-    if args.port is not None:
-        config['hath_port'] = args.port
-    if args.no_zip:
-        config['zip_downloaded'] = False
-    if args.disable_ip_check:
-        config['disable_ip_check'] = True
-    if args.download_proxy is not None:
-        config['download_proxy'] = args.download_proxy
-    if args.rpc_proxy is not None:
-        config['rpc_proxy'] = args.rpc_proxy
+    config = _build_config(args)
 
-    if args.log_level is not None:
-        config['log_level'] = args.log_level
+    errors = validate_startup_config(config)
+    if errors:
+        for err in errors:
+            print(f'Configuration error: {err}', file=sys.stderr)
+        sys.exit(1)
 
-    if config['log_level'] is not None:
-        config['override_log'] = True
+    os.makedirs(config['log_dir'], exist_ok=True)
+    os.makedirs(config['cache_dir'], exist_ok=True)
+    os.makedirs(config['data_dir'], exist_ok=True)
+    os.makedirs(config['download_dir'], exist_ok=True)
+    os.makedirs(config['config_dir'], exist_ok=True)
 
-    # Check necessary directory and create it if not exists
-    os.makedirs(config.get('log_dir', 'log'), exist_ok=True)
-    os.makedirs(config.get('cache_dir', 'cache'), exist_ok=True)
-    os.makedirs(config.get('data_dir', 'data'), exist_ok=True)
-    os.makedirs(config.get('config_dir', 'config'), exist_ok=True)
-
-    log_manager.setup_file_logging(config.get('log_dir', 'log'))
-    logging.debug(f'File logging initialized - logs will be stored in "{config.get('log_dir', 'log')}" directory')
-    logging.debug('Log files: hath_client.log')
-    logging.debug('Log rotation is handled by system logrotate (multiprocess-safe)')
-
+    log_manager.setup_file_logging(config['log_dir'], json_logs=config['json_logs'])
     logger = logging.getLogger(__name__)
     logger.info('Initializing Hentai@Home client for Gunicorn deployment...')
 
-    # Initialize hath_config here in the main process before starting workers
     hath_config = config_manager.Config()
 
     if not config_manager.initialize(config):
         logger.error('Failed to initialize configuration')
         sys.exit(1)
 
-    # Initialize logging for background tasks
     if config['override_log']:
         log_level = config['log_level'].upper()
         numeric_level = getattr(logging, log_level, None)
@@ -120,109 +130,72 @@ def main():
             logger.error(f'Invalid log level: {config["log_level"]}')
             sys.exit(1)
         logger.info(f'Log level overridden to {log_level}')
-        logger.setLevel(numeric_level)
-    elif hath_config and hath_config.config.get('disable_logging', False):
+        logging.getLogger().setLevel(numeric_level)
+        log_manager.set_file_log_level(numeric_level)
+    elif hath_config.config.get('disable_logging', False):
         logger.info('Setting log level to WARNING as per configuration')
-        logger.setLevel(logging.WARNING)
-    else:
-        logger.info('Using default log level from settings or config')
+        logging.getLogger().setLevel(logging.WARNING)
+        log_manager.set_file_log_level(logging.WARNING)
 
-    # Import modules that depend on hath_config (now using singleton)
-    import cache_manager
     import background_manager
-    import event_manager
+    import cache_manager
 
-    # Validate cache before starting workers
     missing_db = db.initialize_database()
- 
     cache_manager.cache_validation(force_rescan=missing_db)
-
-    # Set up shutdown handlers for graceful cleanup
     background_manager.setup_shutdown_handlers()
-
-    # Start server startup notification and background tasks
     background_manager.start_background_task()
 
-    # Now we can use the logger
     logger.info('Configuration initialized successfully')
 
-    # Get configuration from hath_config
-    if not hath_config:
-        logger.error('Configuration not available')
-        sys.exit(1)
-        
     flask_config = hath_config.config
-
     host = flask_config['host']
-
-    if config['override_port']:
-        port = config['hath_port']
-    else:
-        port = flask_config['port']
+    port = config['hath_port'] if config['override_port'] else flask_config['port']
 
     if not host or not port:
         logger.error('Invalid host or port configuration')
         sys.exit(1)
 
-    # Get SSL certificate paths directly from hath_config, not from Flask config
-    # Flask's ssl_context is only used when running Flask directly
     cert_file_path = hath_config.cert_file
     key_file_path = hath_config.key_file
 
-    logger.info(f'Starting Gunicorn server on {host}:{port}')
-
-    # Hentai@Home requires HTTPS - enforce SSL-only operation
     if not cert_file_path or not key_file_path:
         logger.error('SSL certificates not available - Hentai@Home requires HTTPS operation')
-        logger.error('Please ensure SSL certificates are properly configured in hath_config')
         sys.exit(1)
 
-    logger.info(f'SSL enabled with certificate: {cert_file_path}')
-    logger.info(f'SSL key file: {key_file_path}')
-    logger.info('SSL configuration: TLS 1.2 and 1.3 supported (auto-negotiation)')
-    logger.info('Strong cipher suites enabled for enhanced security')
-
-    # Verify certificate files exist
-    if not os.path.exists(cert_file_path):
-        logger.error(f'SSL certificate file not found: {cert_file_path}')
-        sys.exit(1)
-    if not os.path.exists(key_file_path):
-        logger.error(f'SSL key file not found: {key_file_path}')
+    if not os.path.exists(cert_file_path) or not os.path.exists(key_file_path):
+        logger.error('SSL certificate or key file not found')
         sys.exit(1)
 
-    # Build Gunicorn command - use the virtual environment's gunicorn
-    # This script provides all necessary configuration via command-line parameters
+    logger.info(f'Starting Gunicorn server on {host}:{port}')
 
-    # Get the path to the virtual environment's gunicorn executable
     venv_python = sys.executable
-    venv_dir = os.path.dirname(os.path.dirname(venv_python))  # Go up two levels from python to venv root
+    venv_dir = os.path.dirname(os.path.dirname(venv_python))
     gunicorn_executable = os.path.join(venv_dir, 'bin', 'gunicorn')
-
-    # Fallback to system gunicorn if virtual env gunicorn not found
     if not os.path.exists(gunicorn_executable):
-        logger.warning(f'Virtual environment gunicorn not found at {gunicorn_executable}')
-        logger.warning('Falling back to system gunicorn - this may cause import issues')
+        logger.warning('Virtual environment gunicorn not found; falling back to system gunicorn')
         gunicorn_executable = 'gunicorn'
-    else:
-        logger.info(f'Using virtual environment gunicorn: {gunicorn_executable}')
+
+    conf_path = os.path.join(os.path.dirname(__file__), 'gunicorn.conf.py')
+    pid_path = os.path.join(config['config_dir'], 'gunicorn.pid')
+
+    os.environ['HATH_WORKERS'] = str(config['workers'])
+    os.environ['HATH_WORKER_CLASS'] = config['worker_class']
+    os.environ['HATH_BIND'] = f'{host}:{port}'
+    os.environ['HATH_CERTFILE'] = cert_file_path
+    os.environ['HATH_KEYFILE'] = key_file_path
+    os.environ['HATH_PIDFILE'] = pid_path
+    os.environ['HATH_ACCESSLOG'] = os.path.join(config['log_dir'], 'gunicorn_access.log')
+    os.environ['HATH_ERRORLOG'] = os.path.join(config['log_dir'], 'gunicorn_error.log')
 
     gunicorn_cmd = [
         gunicorn_executable,
-        '--bind', f'{host}:{port}',
-        '--certfile', cert_file_path,
-        '--keyfile', key_file_path,
-        '--pid', 'config/gunicorn.pid',
-        '--workers', str(config['workers']),
-        'wsgi:application'
+        '-c', conf_path,
+        'wsgi:application',
     ]
 
     try:
         logger.info('Starting HTTPS server with Gunicorn (SSL required for Hentai@Home)...')
-        logger.debug(f'Command: {" ".join(gunicorn_cmd)}')
-        
-        # Execute Gunicorn
         subprocess.run(gunicorn_cmd, check=True)
-        
     except KeyboardInterrupt:
         logger.info('Shutdown signal received, stopping server...')
     except subprocess.CalledProcessError as e:
@@ -231,10 +204,7 @@ def main():
     except FileNotFoundError:
         logger.error('Gunicorn not found - please install with: pip install gunicorn')
         sys.exit(1)
-    except Exception as e:
-        logger.error(f'Error starting HTTPS server: {e}')
-        logger.error('Please check SSL certificate configuration and try again')
-        sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

@@ -1,0 +1,18 @@
+[Unit]
+Description=Hentai@Home Python Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hath
+WorkingDirectory=/opt/py-hath
+ExecStart=/opt/py-hath/venv/bin/python run_gunicorn.py
+Restart=on-failure
+RestartSec=10
+
+# Hardening (adjust paths as needed)
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
