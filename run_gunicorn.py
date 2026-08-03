@@ -23,6 +23,7 @@ def _build_config(args) -> dict:
     config = {
         'workers': getattr(settings, 'workers', 4),
         'worker_class': getattr(settings, 'worker_class', 'sync'),
+        'worker_connections': getattr(settings, 'worker_connections', 1000),
         'zip_downloaded': getattr(settings, 'zip_downloaded', True),
         'data_dir': getattr(settings, 'data_dir', 'data'),
         'cache_dir': getattr(settings, 'cache_dir', 'cache'),
@@ -180,6 +181,7 @@ def main():
 
     os.environ['HATH_WORKERS'] = str(config['workers'])
     os.environ['HATH_WORKER_CLASS'] = config['worker_class']
+    os.environ['HATH_WORKER_CONNECTIONS'] = str(config['worker_connections'])
     os.environ['HATH_BIND'] = f'{host}:{port}'
     os.environ['HATH_CERTFILE'] = cert_file_path
     os.environ['HATH_KEYFILE'] = key_file_path
@@ -192,6 +194,13 @@ def main():
         '-c', conf_path,
         'wsgi:application',
     ]
+
+    logger.info(
+        'Gunicorn: %s workers, worker_class=%s, worker_connections=%s',
+        config['workers'],
+        config['worker_class'],
+        config['worker_connections'],
+    )
 
     try:
         logger.info('Starting HTTPS server with Gunicorn (SSL required for Hentai@Home)...')

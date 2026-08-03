@@ -2,11 +2,14 @@
 
 # Client version is defined in hath/constants.py (CLIENT_VERSION)
 
-# The number of gunicorn workers, default is 4
-workers = 4
+# The number of gunicorn worker processes (use fewer with gevent)
+workers = 2
 
-# Gunicorn worker class: "sync" (default) or "gevent"
-worker_class = "sync"
+# Gunicorn worker class: "sync" or "gevent" (recommended for public HTTPS nodes)
+worker_class = "gevent"
+
+# Concurrent connections per gevent worker (ignored for sync workers)
+worker_connections = 1000
 
 # zip the gallery downloaded from downloader?
 zip_downloaded = True

@@ -7,7 +7,11 @@ gunicorn.SERVER = 'Genetic Lifeform and Distributed Open Server 0.1-py '
 workers = int(os.environ.get('HATH_WORKERS', '4'))
 worker_class = os.environ.get('HATH_WORKER_CLASS', 'sync')
 
-timeout = 30
+# gevent/eventlet only: concurrent connections per worker
+worker_connections = int(os.environ.get('HATH_WORKER_CONNECTIONS', '1000'))
+
+# Drop stuck clients (incomplete SSL/HTTP) quickly; gevent handles concurrency
+timeout = int(os.environ.get('HATH_TIMEOUT', '10'))
 keepalive = 0
 
 max_requests = 1000

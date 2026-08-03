@@ -1,17 +1,17 @@
 import logging
 import os
 import sqlite3
-import threading
 from contextlib import contextmanager
 from typing import List, Optional, Tuple
 
+from hath.local import Local
 from hath.paths import get_db_path
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
-_thread_local = threading.local()
+_context_local = Local()
 
 
 def _db_path() -> str:
@@ -19,23 +19,23 @@ def _db_path() -> str:
 
 
 def _get_connection():
-    """Get a thread-local database connection."""
+    """Get a greenlet/thread-local database connection."""
     path = _db_path()
-    if not hasattr(_thread_local, 'connection') or getattr(_thread_local, 'db_path', None) != path:
-        if hasattr(_thread_local, 'connection'):
+    if not hasattr(_context_local, 'connection') or getattr(_context_local, 'db_path', None) != path:
+        if hasattr(_context_local, 'connection'):
             try:
-                _thread_local.connection.close()
+                _context_local.connection.close()
             except Exception:
                 pass
-        _thread_local.connection = sqlite3.connect(
+        _context_local.connection = sqlite3.connect(
             path,
             timeout=30.0,
             check_same_thread=False,
         )
-        _thread_local.db_path = path
-        _thread_local.connection.execute('PRAGMA journal_mode=WAL')
-        _thread_local.connection.execute('PRAGMA foreign_keys=ON')
-    return _thread_local.connection
+        _context_local.db_path = path
+        _context_local.connection.execute('PRAGMA journal_mode=WAL')
+        _context_local.connection.execute('PRAGMA foreign_keys=ON')
+    return _context_local.connection
 
 
 @contextmanager
@@ -54,15 +54,15 @@ def get_db_connection():
 
 
 def close_thread_connection():
-    """Close the thread-local connection. Call this when thread is ending."""
-    if hasattr(_thread_local, 'connection'):
+    """Close the greenlet/thread-local connection. Call when a worker or thread ends."""
+    if hasattr(_context_local, 'connection'):
         try:
-            _thread_local.connection.close()
-            delattr(_thread_local, 'connection')
-            if hasattr(_thread_local, 'db_path'):
-                delattr(_thread_local, 'db_path')
+            _context_local.connection.close()
+            delattr(_context_local, 'connection')
+            if hasattr(_context_local, 'db_path'):
+                delattr(_context_local, 'db_path')
         except Exception as e:
-            logger.warning(f"Error closing thread-local database connection: {e}")
+            logger.warning(f"Error closing database connection: {e}")
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:

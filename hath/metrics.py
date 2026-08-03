@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from typing import Any
 
-_lock = threading.Lock()
+from hath.local import RLock
+
+_lock = RLock()
 _state: dict[str, Any] = {
     "cache_hits": 0,
     "cache_misses": 0,

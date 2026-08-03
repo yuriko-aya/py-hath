@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import threading
 from typing import Optional
 
 import requests
 
 from hath.constants import USER_AGENT
+from hath.local import Local
 
-_thread_local = threading.local()
+_context_local = Local()
 
 
 def get_request_headers() -> dict[str, str]:
@@ -17,11 +17,11 @@ def get_request_headers() -> dict[str, str]:
 
 
 def get_session() -> requests.Session:
-    if not hasattr(_thread_local, "session"):
+    if not hasattr(_context_local, "session"):
         session = requests.Session()
         session.headers.update(get_request_headers())
-        _thread_local.session = session
-    return _thread_local.session
+        _context_local.session = session
+    return _context_local.session
 
 
 def get(
@@ -35,6 +35,6 @@ def get(
 
 
 def close_session() -> None:
-    if hasattr(_thread_local, "session"):
-        _thread_local.session.close()
-        delattr(_thread_local, "session")
+    if hasattr(_context_local, "session"):
+        _context_local.session.close()
+        delattr(_context_local, "session")
