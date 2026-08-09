@@ -1,7 +1,15 @@
-## Hentai@Home Python Client Sttings
+## Hentai@Home Python Client Settings
 
-# The number of gunicorn workers, default is 4
-workers = 4
+# Client version is defined in hath/constants.py (CLIENT_VERSION)
+
+# The number of gunicorn worker processes (use fewer with gevent)
+workers = 2
+
+# Gunicorn worker class: "sync" or "gevent" (recommended for public HTTPS nodes)
+worker_class = "gevent"
+
+# Concurrent connections per gevent worker (ignored for sync workers)
+worker_connections = 1000
 
 # zip the gallery downloaded from downloader?
 zip_downloaded = True
@@ -12,12 +20,24 @@ data_dir = 'data'
 # cache directory to save cached image
 cache_dir = 'cache'
 
+# download directory for gallery downloads
+download_dir = 'download'
+
+# runtime config cache directory (config.json for worker processes)
+config_dir = 'config'
+
 # log directory for application logs
 log_dir = 'log'
 
 # log level (INFO, DEBUG, WARNING, or ERROR)
 # will override setting from client page
 #log_level = ''
+
+# JSON structured logs for production aggregation (default: False)
+json_logs = False
+
+# Trust X-Forwarded-For for servercmd IP checks (only enable behind a trusted reverse proxy)
+trust_x_forwarded_for = False
 
 # hath override port
 # this will override setting from client page

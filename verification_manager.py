@@ -1,6 +1,7 @@
 import hashlib
-import time
 import logging
+import time
+
 import config_manager
 
 logger = logging.getLogger(__name__)
@@ -42,18 +43,18 @@ def verify_h_endpoint_auth(keystamp: str, expected: str, file_id: str) -> bool:
         current_time = int(time.time())
         keystamp_int = int(keystamp)
         time_diff = abs(current_time - keystamp_int)
-        
+
         if time_diff > 900:
             logger.warning(f"Keystamp too old: {time_diff} seconds difference")
             return False
-        
+
         # Generate expected hash: first 10 chars of "{keystamp}-{fileid}-{client_key}-hotlinkthis"
         hash_data = f"{keystamp}-{file_id}-{hath_config.client_key}-hotlinkthis"
         full_hash = hashlib.sha1(hash_data.encode()).hexdigest()
         expected_hash = full_hash[:10]
-        
+
         return expected == expected_hash
-        
+
     except ValueError:
         logger.warning(f"Invalid keystamp format: {keystamp}")
         return False

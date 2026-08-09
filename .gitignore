@@ -91,8 +91,11 @@ Pipfile.lock
 poetry.lock
 
 # test file
-*test*
-*tests*
 *-source
 config/
 .trash/
+
+# Allow tests directory
+!tests/
+!tests/**
+tests/__pycache__/

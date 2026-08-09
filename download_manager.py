@@ -22,56 +22,52 @@ Key Features:
 Usage:
     Call trigger_download() to start the download manager in background:
     >>> trigger_download()
-    
+
 Author: H@H Python Client
 Version: 0.2
 """
 
-import re
-import requests
-import logging
-import rpc_manager
-import os
 import hashlib
-import time
-import threading
-import settings
+import logging
+import os
+import re
 import subprocess
 import sys
-import config_manager
-
+import threading
+import time
 from pathlib import Path
+
+import config_manager
+import rpc_manager
+import settings
+from hath.http_client import get
+from hath.metrics import record_download_completed, set_download_status
+from hath.paths import get_download_dir
 
 logger = logging.getLogger(__name__)
 
 max_name_length = 90
-download_dir = 'download'
 python_exe = sys.executable
-
-
-requests_headers = {
-    'User-Agent': 'Hentai@Home Python Client 0.2'
-}
 
 def get_queue(downloaded: bool = False, gid: int = 0, minxres: str = '') -> str:
     """
     Fetch the download queue from the H@H server.
-    
+
     Retrieves the list of pending downloads or marks a gallery as downloaded.
     This function communicates with the server to get metadata for galleries
     that need to be downloaded.
-    
+
     Args:
         downloaded (bool): Whether to mark a gallery as downloaded (default: False)
         gid (int): Gallery ID to mark as downloaded (default: 0)
         minxres (str): Minimum resolution for the downloaded gallery (default: '')
-        
+
     Returns:
         str: Server response containing gallery metadata or status message
-        
+
     Raises:
         None: Function handles errors internally and returns empty string on failure
-        
+
     Example:
         >>> metadata = get_queue()  # Get next download
         >>> get_queue(downloaded=True, gid=12345, minxres='1280')  # Mark as downloaded
@@ -101,30 +97,30 @@ def get_queue(downloaded: bool = False, gid: int = 0, minxres: str = '') -> str:
 def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
     """
     Parse gallery metadata from server response.
-    
+
     Processes the metadata string received from the H@H server and extracts
     gallery information including files list, title, resolution, and other details.
     The metadata format follows a specific structure with sections for gallery
     info, file list, and additional information.
-    
+
     Args:
         metadata (str): Raw metadata string from server response
-        
+
     Returns:
         tuple[bool, dict, str]: A tuple containing:
             - bool: Success status (True if parsing succeeded)
             - dict: Gallery information with keys:
                 - 'gid': Gallery ID (int)
-                - 'filecount': Number of files (int) 
+                - 'filecount': Number of files (int)
                 - 'minxres': Minimum resolution (str)
                 - 'title': Sanitized gallery title (str)
                 - 'files': List of file dictionaries (list)
             - str: Additional gallery text/information
-            
+
     Note:
         Gallery titles are sanitized to remove invalid filesystem characters
         and truncated to max_name_length (90 characters) if necessary.
-        
+
     Example:
         >>> success, info, text = parse_metadata(server_response)
         >>> if success:
@@ -137,7 +133,7 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
     if not metadata:
         logger.error(f'Invalid metadata format: {metadata}')
         return False, {}, ''
-    logger.debug(f'Started metadata parsing')
+    logger.debug('Started metadata parsing')
     parse_state = 0
     gallery_txt = ''
     for metadata_line in metadata.splitlines():
@@ -221,26 +217,26 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
 def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
     """
     Download, verify, and save a file from a given URL.
-    
+
     Downloads a file from the provided link, verifies its SHA1 hash against
     the expected hash (using both the provided file_sha1 and URL-extracted hash),
     and saves it to the specified path. If the file already exists and has the
     correct hash, the download is skipped.
-    
+
     Args:
         file_sha1 (str): Expected SHA1 hash of the file from metadata
         link (str): Download URL containing the file ID with hash
         file_path (str): Local file path where the file should be saved
-        
+
     Returns:
         bool: True if file was successfully downloaded/verified, False otherwise
-        
+
     Note:
         - Creates parent directories if they don't exist
         - Validates SHA1 hash before saving using both metadata and URL hash
         - Skips download if file already exists with correct hash
         - Uses streaming download for memory efficiency
-        
+
     Example:
         >>> hash_val = "abc123def456"
         >>> url = "https://example.com/files/abc123-456789-image.jpg"
@@ -256,7 +252,7 @@ def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
 
     file_path_obj = Path(file_path)
     file_path_obj.parent.mkdir(parents=True, exist_ok=True)
-    
+
     url_parts = link.split('/')
     if len(url_parts) < 7:
         logger.error(f'Invalid download link format: {link}')
@@ -277,7 +273,7 @@ def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
         logger.debug(f'File already exists and valid: {file_path}')
         return True
     try:
-        response = requests.get(link, headers=requests_headers, timeout=30, proxies=proxies)
+        response = get(link, timeout=30, proxies=proxies or None)
         if response.status_code == 200:
             content = response.content
             logger.debug(f'Downloaded {len(content)} bytes from {link}')
@@ -306,31 +302,31 @@ def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
 def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
     """
     Download all files for a gallery based on parsed metadata.
-    
+
     Processes the gallery information and downloads all files in the gallery.
     For each file, it requests download URLs from the server, attempts to download
     from multiple mirrors with retry logic, and saves a gallery info text file.
     After successful download, it immediately triggers ZIP compression for this
     specific gallery directory.
-    
+
     Args:
         gallery_info (dict): Parsed gallery metadata containing:
             - 'gid': Gallery ID
-            - 'title': Gallery title  
+            - 'title': Gallery title
             - 'minxres': Minimum resolution
             - 'files': List of file information dictionaries
         gallery_txt (str): Additional gallery information text
         dir_path (str): Directory path where files should be downloaded
-        
+
     Returns:
         bool: True if all files were successfully downloaded, False otherwise
-        
+
     Note:
         - Retries up to 3 times per download URL
         - Triggers individual ZIP compression immediately after download completion
         - ZIP compression runs in separate process to avoid blocking downloads
         - Saves gallery information as 'galleryinfo.txt'
-        
+
     Example:
         >>> gallery_info = {'gid': 12345, 'files': [...], ...}
         >>> success = start_download(gallery_info, info_text, "/downloads/gallery")
@@ -417,7 +413,7 @@ def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
         return False
     logger.info(f'Completed download for GID: {gid} {gallery_title}')
     if not settings.zip_downloaded:
-        logger.debug('ZIP compression disabled in settings')        
+        logger.debug('ZIP compression disabled in settings')
         return True
     subprocess.Popen(
         [python_exe, 'zip_compressor.py', dir_path],
@@ -430,17 +426,17 @@ def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
 def initialize_download_manager():
     """
     Initialize and run the download manager process.
-    
+
     Main download loop that continuously fetches the download queue from the server,
     processes pending galleries, and downloads their files. Handles the complete
     download workflow including queue management, metadata parsing, file downloading,
     and progress tracking.
-    
+
     The function runs indefinitely until:
     - No more pending downloads
     - Server returns invalid request
     - Manual interruption
-    
+
     Process flow:
     1. Ensure download directory exists
     2. Fetch download queue from server
@@ -450,28 +446,39 @@ def initialize_download_manager():
     6. Trigger individual ZIP compression for the gallery
     7. Mark gallery as downloaded
     8. Repeat until queue is empty
-    
+
     Note:
         - Sleeps for 30 seconds on download failure before retrying
         - Tracks downloaded galleries to avoid reprocessing
         - Creates directory structure as needed
         - Handles server communication errors gracefully
-        
+
     Example:
         This function is typically called in a separate thread:
         >>> thread = threading.Thread(target=initialize_download_manager, daemon=True)
         >>> thread.start()
     """
     hath_config = config_manager.Config()
-    # Ensure download directory exists
-    Path(download_dir).mkdir(exist_ok=True)
+    download_dir = get_download_dir()
+    set_download_status(active=True, last_error='')
+    try:
+        _run_download_loop(hath_config, download_dir)
+    except Exception as e:
+        logger.error(f'Download manager failed: {e}')
+        set_download_status(active=False, last_error=str(e))
+    finally:
+        set_download_status(active=False)
+
+
+def _run_download_loop(hath_config, download_dir: str):
+    Path(download_dir).mkdir(parents=True, exist_ok=True)
 
     if not hath_config:
         logger.error('HathConfig is not properly initialized for fetching download queue')
         return False
 
     data_dir = hath_config.data_dir
-    pid_file = os.path.join(data_dir, '.download_manager.pid')
+    os.path.join(data_dir, '.download_manager.pid')
 
     mark_downloaded = 0
     downloaded = False
@@ -514,30 +521,31 @@ def initialize_download_manager():
             continue
         mark_downloaded = gid
         downloaded = True
+        record_download_completed()
         time.sleep(5)
 
 def trigger_download():
     """
     Start the download manager in a background thread.
-    
+
     Creates and starts a daemon thread that runs the download manager process.
     This function is typically called from the server command handler when
     a 'start_downloader' command is received from the H@H server.
-    
+
     The download manager will:
     - Continuously fetch pending downloads from the server queue
     - Parse gallery metadata and download all files
     - Create individual ZIP archives for each completed gallery
     - Handle errors and retry logic automatically
-    
+
     Returns:
         bool: Always returns True to indicate the thread was started successfully
-        
+
     Note:
         - Uses daemon thread so it won't prevent program exit
         - Only one download manager should run at a time
         - Thread will automatically stop when main program exits
-        
+
     Example:
         >>> trigger_download()  # Start background download process
         True

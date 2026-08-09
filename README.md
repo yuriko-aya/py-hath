@@ -75,11 +75,9 @@ The application requires the following Python packages:
 Flask>=2.3.0          # Web framework
 requests[socks]>=2.31.0 # HTTP client with SOCKS proxy support
 cryptography>=41.0.0  # SSL/TLS and certificate handling
-waitress>=2.1.0       # Alternative WSGI server
 gunicorn>=21.2.0      # Production WSGI server (recommended)
-watchdog>=3.0.0       # File system monitoring
-gevent==25.8.2        # Asynchronous networking library
-psutil==7.0.0         # System and process utilities
+gevent>=25.8.2        # Optional async workers (set worker_class = "gevent" in settings.py)
+psutil>=7.0.0         # System and process utilities
 ```
 
 All dependencies are automatically installed via `pip install -r requirements.txt`.
@@ -146,8 +144,8 @@ The application uses SQLite for persistent storage:
 
 ### Configuration Files
 The following files are automatically managed:
-- `.hath_config_cache.json` - Cached configuration data
-- `.hath-background-tasks.lock` - Background task coordination
+- `config/config.json` - Cached configuration for Gunicorn workers
+- `config/gunicorn.pid` - Gunicorn master PID (cert reload via SIGUSR2)
 - `client_login.example` - Example credential file format
 
 ### Application Settings
@@ -214,7 +212,7 @@ tail -f log/hath_errors.log
 ### Environment Variables
 ```bash
 export FLASK_ENV=production  # For production deployment
-export HATH_DEBUG=1         # Enable debug logging
+export HATH_DEBUG=1         # Enable debug logging (wired in run_gunicorn.py)
 ```
 
 ### Proxy Configuration
@@ -268,8 +266,10 @@ py-hath/
 │   ├── pcache.db          # SQLite database (auto-created)
 │   ├── pcache.db-shm      # SQLite shared memory (WAL mode)
 │   ├── pcache.db-wal      # SQLite write-ahead log (WAL mode)
-│   └── .hath_config_cache.json # Configuration cache
-├── cache/                 # Image cache storage (auto-created)
+│   └── (runtime files created on first run)
+├── config/                # Runtime configuration (auto-created)
+│   ├── config.json        # Worker configuration cache
+│   └── gunicorn.pid       # Gunicorn PID file
 │   └── [xx]/              # Hash-organized directories (e.g., 6a/, 6b/, etc.)
 │       └── [xx]/          # Secondary hash level
 │           └── [files]    # Cached image files
@@ -289,6 +289,8 @@ py-hath/
 
 ### Core Endpoints
 - `GET /` - Health check and server status
+- `GET /health` - Readiness probe (DB, disk, certificate, metrics)
+- `GET /status/<actkey>` - Authenticated cache and download status (JSON)
 - `POST /servercmd/<command>/<additional>/<time>/<key>` - Server command interface
 - `GET /h/<fileid>/<additional>/<filename>` - Image serving endpoint
 

@@ -1,19 +1,18 @@
 import atexit
-import cache_manager
-import db_manager as db
-import event_manager
-import storage_manager
-import download_manager
-import logging
-import socket
-import signal
-import time
-import threading
 import hashlib
+import logging
 import os
+import signal
+import socket
 import sys
-import rpc_manager
+import threading
+import time
+
+import cache_manager
 import config_manager
+import db_manager as db
+import rpc_manager
+import storage_manager
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +30,10 @@ def notify_client_start() -> bool:
 
         logger.debug("Server notification sent successfully")
         logger.debug(f"Server response: {response.text.strip()}")
-        if not 'OK' in response.text.strip():
+        if 'OK' not in response.text.strip():
             return False
         return True
-        
+
     except Exception as e:
         logger.error(f"Error notifying server of client start: {e}")
         return False
@@ -48,33 +47,33 @@ def start_background_task():
         # Wait for Flask server to be ready by checking if port is listening
         max_attempts = 30  # 30 seconds max wait
         attempts = 0
-        
+
         if not hath_config:
             logger.error("hath_config not available for notification")
             return
-            
+
         host = hath_config.config.get('host', '0.0.0.0')
         port = int(hath_config.config.get('port', 5000))
-        
+
         # Convert 0.0.0.0 to localhost for local checking
         check_host = 'localhost' if host == '0.0.0.0' else host
-        
+
         logger.debug(f"Waiting for server to start on {host}:{port}...")
-        
+
         while attempts < max_attempts:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(1)
                 result = sock.connect_ex((check_host, port))
                 sock.close()
-                
+
                 if result == 0:
                     logger.debug("Server is ready, sending startup notification...")
-                    success = notify_client_start()              
+                    success = notify_client_start()
                     if success:
                         config_manager.Config.is_server_ready = True
                         deleted_blacklist = cache_manager.blacklist_process(259200)
-                        logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files") 
+                        logger.debug(f"Processed get_blacklist command, deleted {deleted_blacklist} files")
 
                         logger.debug("Startup notification successful, starting periodic task and notifications...")
                         # Start periodic task and still_alive notifications
@@ -82,13 +81,13 @@ def start_background_task():
                     else:
                         logger.warning("Startup notification failed, not starting periodic notifications")
                     return
-                    
+
             except Exception:
                 pass
-            
+
             attempts += 1
             time.sleep(1)
-        
+
         logger.error("Server did not start within 30 seconds, skipping notification")
 
     # Run notification in background thread
@@ -109,17 +108,17 @@ def start_periodic_task():
                 if not hath_config.client_id or not hath_config.client_key:
                     logger.error("Configuration not available for still_alive notification")
                     continue
-                
+
                 # Generate still_alive notification URL
                 current_acttime = config_manager.get_current_acttime()
                 actkey_data = f"hentai@home-still_alive--{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
                 actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-                
+
                 url_path = (
                     f"/15/rpc?clientbuild={hath_config.client_build}&act=still_alive"
                     f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
                 )
-                
+
                 logger.info("Sending periodic still_alive notification...")
                 response = rpc_manager._make_rpc_request(url_path, timeout=10)
 
@@ -157,14 +156,14 @@ def notify_client_stop():
         if not hath_config.client_id or not hath_config.client_key:
             logger.error("Configuration not available for client_stop notification")
             return
-        
+
         logger.info("Sending client_stop notification...")
-        
+
         # Generate client_stop notification URL
         current_acttime = config_manager.get_current_acttime()
         actkey_data = f"hentai@home-client_stop--{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
         actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-        
+
         url_path = (
             f"/15/rpc?clientbuild={hath_config.client_build}&act=client_stop"
             f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
@@ -175,13 +174,13 @@ def notify_client_stop():
             logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
         else:
             logger.debug('Server is never ready. Skipping stop notification.')
-        
+
         # Clean up config cache when shutting down
         config_manager.remove_config()
-        
+
         # Clean up database connections
         db.cleanup_connections()
-        
+
     except Exception as e:
         logger.error(f"Failed to send client_stop notification: {e}")
         # Still try to clean up config cache even if notification failed
@@ -199,7 +198,7 @@ def setup_shutdown_handlers():
             signal_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else str(signum)
             logger.info(f"Received signal {signal_name}, shutting down gracefully...")
             notify_client_stop()
-        except Exception as e:
+        except Exception:
             # Avoid logging during shutdown as it might cause issues
             pass
         finally:
