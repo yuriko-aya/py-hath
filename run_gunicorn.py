@@ -12,6 +12,7 @@ import config_manager
 import db_manager as db
 import log_manager
 import settings
+from hath.paths import get_cert_path, get_key_path
 from hath.validation import validate_startup_config
 
 
@@ -118,12 +119,8 @@ def _validate_runtime_config(hath_config, config, logger) -> bool:
         logger.error('Invalid host or port configuration')
         return False
 
-    cert_file_path = hath_config.cert_file
-    key_file_path = hath_config.key_file
-
-    if not cert_file_path or not key_file_path:
-        logger.error('SSL certificates not available - Hentai@Home requires HTTPS operation')
-        return False
+    cert_file_path = get_cert_path()
+    key_file_path = get_key_path()
 
     if not os.path.exists(cert_file_path) or not os.path.exists(key_file_path):
         logger.error('SSL certificate or key file not found')
@@ -213,8 +210,8 @@ def main():
 
     logger.info(f'Starting Gunicorn server on {host}:{port}')
 
-    cert_file_path = hath_config.cert_file
-    key_file_path = hath_config.key_file
+    cert_file_path = get_cert_path()
+    key_file_path = get_key_path()
 
     venv_python = sys.executable
     venv_dir = os.path.dirname(os.path.dirname(venv_python))

@@ -38,6 +38,18 @@ def get_config_cache_path() -> str:
     return os.path.join(get_config_dir(), "config.json")
 
 
+def get_cert_path() -> str:
+    return os.path.join(get_data_dir(), "client.crt")
+
+
+def get_key_path() -> str:
+    return os.path.join(get_data_dir(), "client.key")
+
+
+def get_p12_path() -> str:
+    return os.path.join(get_data_dir(), "client.p12")
+
+
 def cache_file_path(file_id: str) -> str:
     l1dir = file_id[:2]
     l2dir = file_id[2:4]

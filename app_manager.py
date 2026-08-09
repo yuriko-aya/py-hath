@@ -23,7 +23,7 @@ import verification_manager
 from hath.http_client import get
 from hath.metrics import record_cache_hit, record_cache_miss
 from hath.metrics import snapshot as metrics_snapshot
-from hath.paths import cache_file_path
+from hath.paths import cache_file_path, get_cert_path, get_key_path
 from log_manager import setup_file_logging
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,6 @@ def health():
 
     from cryptography import x509
 
-    hath_config = config_manager.Config()
     checks = {
         'database': bool(db_manager.get_cache_stats() is not None),
         'disk': storage_manager.is_disk_ok(),
@@ -99,8 +98,9 @@ def health():
 
     cert_ok = False
     cert_expires = None
-    cert_path = getattr(hath_config, 'cert_file', None)
-    if cert_path and os.path.exists(cert_path):
+    cert_path = get_cert_path()
+    key_path = get_key_path()
+    if os.path.exists(cert_path) and os.path.exists(key_path):
         try:
             with open(cert_path, 'rb') as f:
                 cert = x509.load_pem_x509_certificate(f.read())
