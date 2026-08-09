@@ -251,12 +251,6 @@ def serve_file(file_id: str, additional: str, filename: str):
             file_path, file_id, fileindex, xres, static_name, filename,
         )
 
-    if not cache_manager.verify_file_integrity(file_path, file_id):
-        os.remove(file_path)
-        return _fetch_and_serve_remote(
-            file_path, file_id, fileindex, xres, static_name, filename, info_log=True,
-        )
-
     try:
         file_size = Path(file_path).stat().st_size
         logger.info(f"Serving {file_size / 1024:.2f} kB file: {file_path} as {content_type}")
