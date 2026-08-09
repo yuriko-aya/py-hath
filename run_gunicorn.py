@@ -80,7 +80,7 @@ def _build_config(args) -> dict:
     return config
 
 
-def main():
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Run Hentai@Home client with Gunicorn')
     parser.add_argument('--workers', type=int, help='Number of Gunicorn worker processes')
     parser.add_argument('--log-level', help='Logging level (DEBUG, INFO, WARNING, ERROR)')
@@ -95,6 +95,45 @@ def main():
     parser.add_argument('--trust-x-forwarded-for', action='store_true', help='Trust X-Forwarded-For for servercmd IP checks')
     parser.add_argument('--download-proxy', help='Proxy for gallery download')
     parser.add_argument('--rpc-proxy', help='Proxy for RPC requests')
+    parser.add_argument(
+        '--force-rescan',
+        action='store_true',
+        help='Rebuild cache inventory from disk (full cache validation)',
+    )
+    parser.add_argument(
+        '--stop-after-init',
+        action='store_true',
+        help='Run initialization and validation, then exit without starting the server',
+    )
+    return parser
+
+
+def _validate_runtime_config(hath_config, config, logger) -> bool:
+    """Verify host, port, and SSL files before starting or after init-only runs."""
+    flask_config = hath_config.config
+    host = flask_config.get('host')
+    port = config['hath_port'] if config['override_port'] else flask_config.get('port')
+
+    if not host or not port:
+        logger.error('Invalid host or port configuration')
+        return False
+
+    cert_file_path = hath_config.cert_file
+    key_file_path = hath_config.key_file
+
+    if not cert_file_path or not key_file_path:
+        logger.error('SSL certificates not available - Hentai@Home requires HTTPS operation')
+        return False
+
+    if not os.path.exists(cert_file_path) or not os.path.exists(key_file_path):
+        logger.error('SSL certificate or key file not found')
+        return False
+
+    return True
+
+
+def main():
+    parser = _build_arg_parser()
     args = parser.parse_args()
 
     if args.override_port and args.port is None:
@@ -138,11 +177,31 @@ def main():
         logging.getLogger().setLevel(logging.WARNING)
         log_manager.set_file_log_level(logging.WARNING)
 
-    import background_manager
     import cache_manager
 
     missing_db = db.initialize_database()
-    cache_manager.cache_validation(force_rescan=missing_db)
+    verify_cache = config_manager.Config.verify_cache_requested
+    force_rescan = args.force_rescan or missing_db or verify_cache
+    if force_rescan and args.force_rescan:
+        logger.info('Force rescan requested via --force-rescan')
+    elif force_rescan and verify_cache:
+        logger.info('Force rescan enabled because server requested verify_cache')
+    elif force_rescan:
+        logger.info('Force rescan enabled because database is new or empty')
+
+    if not cache_manager.cache_validation(force_rescan=force_rescan):
+        logger.error('Cache validation failed')
+        sys.exit(1)
+
+    if not _validate_runtime_config(hath_config, config, logger):
+        sys.exit(1)
+
+    if args.stop_after_init:
+        logger.info('Initialization complete (--stop-after-init); exiting without starting server')
+        sys.exit(0)
+
+    import background_manager
+
     background_manager.setup_shutdown_handlers()
     background_manager.start_background_task()
 
@@ -152,22 +211,10 @@ def main():
     host = flask_config['host']
     port = config['hath_port'] if config['override_port'] else flask_config['port']
 
-    if not host or not port:
-        logger.error('Invalid host or port configuration')
-        sys.exit(1)
+    logger.info(f'Starting Gunicorn server on {host}:{port}')
 
     cert_file_path = hath_config.cert_file
     key_file_path = hath_config.key_file
-
-    if not cert_file_path or not key_file_path:
-        logger.error('SSL certificates not available - Hentai@Home requires HTTPS operation')
-        sys.exit(1)
-
-    if not os.path.exists(cert_file_path) or not os.path.exists(key_file_path):
-        logger.error('SSL certificate or key file not found')
-        sys.exit(1)
-
-    logger.info(f'Starting Gunicorn server on {host}:{port}')
 
     venv_python = sys.executable
     venv_dir = os.path.dirname(os.path.dirname(venv_python))

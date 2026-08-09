@@ -54,6 +54,14 @@ class Config:
     static_range_count: Optional[int] = None
     static_range: list = []
 
+    # Set on client_login when server returns verify_cache=true
+    verify_cache_requested = False
+
+
+def is_verify_cache_requested() -> bool:
+    """True when the server asked for cache validation on client_login."""
+    return str(Config.config.get('verify_cache', '')).lower() == 'true'
+
 
 def get_client_ip(environ: dict) -> str:
     """Resolve client IP for servercmd authorization."""
@@ -284,6 +292,11 @@ def get_client_config(force_refresh=False) -> bool:
         logger.debug(f"Port: {Config.config.get('port')}")
         if Config.rpc_server_ips:
             logger.debug(f"RPC servers: {Config.rpc_server_ips}")
+
+        if not force_refresh:
+            Config.verify_cache_requested = is_verify_cache_requested()
+            if Config.verify_cache_requested:
+                logger.info('Server requested cache validation (verify_cache=true)')
 
         if force_refresh:
             apply_hot_reload_settings()

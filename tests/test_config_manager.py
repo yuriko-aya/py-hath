@@ -28,3 +28,14 @@ def test_get_client_ip_forwarded():
     }
     config_manager.Config.trust_x_forwarded_for = True
     assert config_manager.get_client_ip(environ) == '198.51.100.2'
+
+
+def test_is_verify_cache_requested():
+    config_manager.Config.config = {'verify_cache': 'true'}
+    assert config_manager.is_verify_cache_requested() is True
+
+    config_manager.Config.config = {'verify_cache': 'false'}
+    assert config_manager.is_verify_cache_requested() is False
+
+    config_manager.Config.config = {}
+    assert config_manager.is_verify_cache_requested() is False
