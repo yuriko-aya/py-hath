@@ -24,6 +24,7 @@ from hath.http_client import get
 from hath.metrics import record_cache_hit, record_cache_miss
 from hath.metrics import snapshot as metrics_snapshot
 from hath.paths import cache_file_path, get_cert_path, get_key_path
+from hath.validation import file_id_hash_part
 from log_manager import setup_file_logging
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ def after_request(response):
     else:
         speed = 0
         size_kb = 0
-    if response.status_code == 200:
+    if response.status_code in (200, 206):
         logger.info(f'{request.remote_addr} - {request.method} {request.path} - Sending {size_kb:.2f} kB in {duration:.2f} seconds ({speed:.2f} KB/s)')
     elif response.status_code == 301:
         logger.info(f'{request.remote_addr} - {request.method} {request.path} - Redirecting to {response.headers.get("Location")}')
@@ -237,6 +238,10 @@ def serve_file(file_id: str, additional: str, filename: str):
 
     if len(file_id) < 2:
         logger.warning(f"File ID too short: {file_id}")
+        return "File not found", 404, {'Content-Type': 'text/plain'}
+
+    if file_id_hash_part(file_id) is None:
+        logger.warning(f"Invalid SHA-1 in file_id: {file_id}")
         return "File not found", 404, {'Content-Type': 'text/plain'}
 
     static_name = file_id[:4]

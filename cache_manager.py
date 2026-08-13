@@ -76,10 +76,15 @@ def cache_validation(force_rescan=False):
             verified_percent = 0
             deleted_count = 0
             corrupt_count = 0
+            logger.debug(f"Starting cache validation... ({file_count} files to verify)")
             for file in files:
                 static_name = file.name[:4]
-                if verified_count % ten_percent == 0:
-                    logger.debug(f"Cache validation... ({verified_percent:.1f}%)")
+                if verified_count > 0:
+                    if verified_count % ten_percent == 0:
+                        logger.debug(f"Cache validation... ({verified_percent:.1f}%)")
+
+                    if file_count > 100000 and verified_count % 10000 == 0:
+                        logger.debug(f"Cache validation... ({verified_count}/{file_count} files verified)")
 
                 if static_name not in static_range:
                     os.remove(file)
