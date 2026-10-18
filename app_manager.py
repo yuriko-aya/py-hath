@@ -21,9 +21,10 @@ import event_manager
 import storage_manager
 import verification_manager
 from hath.http_client import get
-from hath.metrics import record_cache_hit, record_cache_miss
-from hath.metrics import snapshot as metrics_snapshot
+from hath.metrics import record_cache_hit, record_cache_miss, start_metrics_flusher
 from hath.paths import cache_file_path, get_cert_path, get_key_path
+from hath.stats_client import get_metrics, get_status
+from hath.stats_server import PROMETHEUS_CONTENT_TYPE
 from hath.validation import file_id_hash_part
 from log_manager import setup_file_logging
 
@@ -85,9 +86,17 @@ def index():
     return 'Hentai@Home Python Client', {'Content-Type': 'text/plain'}
 
 
+def _status_actkey_ok(actkey: str) -> bool:
+    hath_config = config_manager.Config()
+    if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
+        return False
+    expected = hashlib.sha1(f'hentai@home-status-{hath_config.client_id}'.encode()).hexdigest()
+    return bool(actkey) and actkey == expected
+
+
 @app.route('/health')
 def health():
-    """Readiness probe with DB, disk, certificate, and metrics checks."""
+    """Readiness probe with DB, disk, and certificate checks."""
     from datetime import datetime, timezone
 
     from cryptography import x509
@@ -116,7 +125,6 @@ def health():
         'status': 'ok' if healthy else 'degraded',
         'checks': checks,
         'certificate_expires': cert_expires,
-        'metrics': metrics_snapshot(),
     }), 200 if healthy else 503
 
 def parse_additional_params(additional: str) -> dict:
@@ -131,32 +139,33 @@ def parse_additional_params(additional: str) -> dict:
 
 @app.route('/status/<actkey>')
 def status(actkey: str):
-    """Get the current status of the server."""
-    hath_config = config_manager.Config()
-    # Check hath_config before using it
-    if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
-        logger.error("Missing hath_config, client_id or client_key for remote fetch")
-        return 'Internal Server Error', 500, {'Content-Type': 'text/plain'}
-
-    expected = hashlib.sha1(f'hentai@home-status-{hath_config.client_id}'.encode()).hexdigest()
-    if not actkey or actkey != expected:
+    """Authenticated snapshot from the stats aggregator."""
+    if not _status_actkey_ok(actkey):
+        hath_config = config_manager.Config()
+        if not hath_config or not getattr(hath_config, 'client_id', None):
+            logger.error("Missing hath_config, client_id or client_key for status")
+            return 'Internal Server Error', 500, {'Content-Type': 'text/plain'}
         return "Forbidden", 403, {'Content-Type': 'text/plain'}
 
     try:
-        cache_status = db_manager.get_cache_stats()
-        return jsonify({
-            "status": "ok",
-            "cache": cache_status,
-            "metrics": metrics_snapshot(),
-            "download": {
-                "active": metrics_snapshot().get("download_active", False),
-                "last_error": metrics_snapshot().get("download_last_error", ""),
-                "galleries_completed": metrics_snapshot().get("download_galleries_completed", 0),
-            },
-        })
+        data = get_status()
+        if data is None:
+            return jsonify({"status": "error", "message": "stats aggregator unavailable"}), 503
+        return jsonify(data)
     except Exception as e:
         logger.error(f"Error fetching cache status: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/metrics/<actkey>')
+def metrics_proxy(actkey: str):
+    """Authenticated Prometheus text from the stats aggregator."""
+    if not _status_actkey_ok(actkey):
+        return "Forbidden", 403, {'Content-Type': 'text/plain'}
+    body = get_metrics()
+    if body is None:
+        return "stats aggregator unavailable", 503, {'Content-Type': 'text/plain'}
+    return Response(body, mimetype=PROMETHEUS_CONTENT_TYPE)
 
 def _content_type_for(filename: str, file_id: str) -> str:
     if 'wbp' in filename or '-wbp' in file_id:
@@ -561,6 +570,7 @@ def create_app():
         log_level = logging.DEBUG
 
     setup_file_logging(hath_config.log_dir if hath_config.log_dir else 'log', log_level)
+    start_metrics_flusher(include_gauges=False)
     logger.info('Hentai@Home Python Client initialized')
 
     return app

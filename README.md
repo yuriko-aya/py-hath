@@ -269,7 +269,8 @@ py-hath/
 │   └── (runtime files created on first run)
 ├── config/                # Runtime configuration (auto-created)
 │   ├── config.json        # Worker configuration cache
-│   └── gunicorn.pid       # Gunicorn PID file
+│   ├── gunicorn.pid       # Gunicorn PID file
+│   └── hath-stats.sock    # Internal stats aggregator (Unix socket)
 │   └── [xx]/              # Hash-organized directories (e.g., 6a/, 6b/, etc.)
 │       └── [xx]/          # Secondary hash level
 │           └── [files]    # Cached image files
@@ -289,8 +290,9 @@ py-hath/
 
 ### Core Endpoints
 - `GET /` - Health check and server status
-- `GET /health` - Readiness probe (DB, disk, certificate, metrics)
-- `GET /status/<actkey>` - Authenticated cache and download status (JSON)
+- `GET /health` - Readiness probe (DB, disk, certificate). No per-worker metrics.
+- `GET /status/<actkey>` - Authenticated aggregated snapshot (JSON) from the stats process
+- `GET /metrics/<actkey>` - Authenticated Prometheus text (proxies the Unix-socket aggregator)
 - `POST /servercmd/<command>/<additional>/<time>/<key>` - Server command interface
 - `GET /h/<fileid>/<additional>/<filename>` - Image serving endpoint
 
@@ -390,7 +392,17 @@ The application maintains comprehensive logs in the `log/` directory:
 
 ### Health Check Endpoints
 - `GET /` - Basic health check and server status
-- Database connectivity can be verified through application logs
+- `GET /health` - DB, disk, and certificate readiness (no per-worker counters)
+- `GET /status/<actkey>` - Aggregated JSON snapshot from `config/hath-stats.sock`
+- `GET /metrics/<actkey>` - Prometheus text via the same aggregator (HTTPS scrape with actkey)
+
+Workers flush counter deltas to the stats process over the Unix socket about every 10 seconds. Prometheus can also scrape the socket directly:
+
+```bash
+curl --unix-socket config/hath-stats.sock http://hath/metrics
+```
+
+The actkey for `/status` and `/metrics` is SHA-1 of `hentai@home-status-{client_id}`.
 
 ### Event System
 - Centralized event management for component coordination
