@@ -293,6 +293,8 @@ py-hath/
 - `GET /health` - Readiness probe (DB, disk, certificate). No per-worker metrics.
 - `GET /status/<actkey>` - Authenticated aggregated snapshot (JSON) from the stats process
 - `GET /metrics/<actkey>` - Authenticated Prometheus text (proxies the Unix-socket aggregator)
+- `GET /dashboard/<actkey>` - Authenticated 24h HTML+SVG charts (in-memory, resets on restart)
+- `GET /history/<actkey>` - Authenticated JSON of the same one-minute samples
 - `POST /servercmd/<command>/<additional>/<time>/<key>` - Server command interface
 - `GET /h/<fileid>/<additional>/<filename>` - Image serving endpoint
 
@@ -395,14 +397,17 @@ The application maintains comprehensive logs in the `log/` directory:
 - `GET /health` - DB, disk, and certificate readiness (no per-worker counters)
 - `GET /status/<actkey>` - Aggregated JSON snapshot from `config/hath-stats.sock`
 - `GET /metrics/<actkey>` - Prometheus text via the same aggregator (HTTPS scrape with actkey)
+- `GET /dashboard/<actkey>` - Server-rendered SVG of last-24h per-minute rates
+- `GET /history/<actkey>` - JSON `{samples: [...]}` (up to 1440 points)
 
-Workers flush counter deltas to the stats process over the Unix socket about every 10 seconds. Prometheus can also scrape the socket directly:
+Workers flush counter deltas to the stats process over the Unix socket about every 10 seconds. The stats process samples those totals once per minute into an in-memory ring (lost on restart). Prometheus can also scrape the socket directly:
 
 ```bash
 curl --unix-socket config/hath-stats.sock http://hath/metrics
+curl --unix-socket config/hath-stats.sock http://hath/dashboard
 ```
 
-The actkey for `/status` and `/metrics` is SHA-1 of `hentai@home-status-{client_id}`.
+The actkey for `/status`, `/metrics`, `/dashboard`, and `/history` is SHA-1 of `hentai@home-status-{client_id}`.
 
 ### Event System
 - Centralized event management for component coordination

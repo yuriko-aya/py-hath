@@ -23,7 +23,7 @@ import verification_manager
 from hath.http_client import get
 from hath.metrics import record_cache_hit, record_cache_miss, start_metrics_flusher
 from hath.paths import cache_file_path, get_cert_path, get_key_path
-from hath.stats_client import get_metrics, get_status
+from hath.stats_client import get_dashboard, get_history, get_metrics, get_status
 from hath.stats_server import PROMETHEUS_CONTENT_TYPE
 from hath.validation import file_id_hash_part
 from log_manager import setup_file_logging
@@ -166,6 +166,28 @@ def metrics_proxy(actkey: str):
     if body is None:
         return "stats aggregator unavailable", 503, {'Content-Type': 'text/plain'}
     return Response(body, mimetype=PROMETHEUS_CONTENT_TYPE)
+
+
+@app.route('/dashboard/<actkey>')
+def dashboard_proxy(actkey: str):
+    """Authenticated 24h SVG dashboard from the stats aggregator."""
+    if not _status_actkey_ok(actkey):
+        return "Forbidden", 403, {'Content-Type': 'text/plain'}
+    body = get_dashboard()
+    if body is None:
+        return "stats aggregator unavailable", 503, {'Content-Type': 'text/plain'}
+    return Response(body, mimetype='text/html')
+
+
+@app.route('/history/<actkey>')
+def history_proxy(actkey: str):
+    """Authenticated 24h sample JSON from the stats aggregator."""
+    if not _status_actkey_ok(actkey):
+        return "Forbidden", 403, {'Content-Type': 'text/plain'}
+    data = get_history()
+    if data is None:
+        return jsonify({"status": "error", "message": "stats aggregator unavailable"}), 503
+    return jsonify(data)
 
 def _content_type_for(filename: str, file_id: str) -> str:
     if 'wbp' in filename or '-wbp' in file_id:

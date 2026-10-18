@@ -45,3 +45,16 @@ def test_metrics_proxy_forbidden_without_key():
     client = app.test_client()
     response = client.get('/metrics/wrong')
     assert response.status_code in (403, 500)
+
+
+def test_dashboard_and_history_proxy():
+    client = app.test_client()
+    with patch('app_manager._status_actkey_ok', return_value=True), patch(
+        'app_manager.get_dashboard', return_value=b'<html><svg></svg></html>'
+    ), patch('app_manager.get_history', return_value={'samples': [{'ts': 1}]}):
+        dash = client.get('/dashboard/dummy')
+        hist = client.get('/history/dummy')
+    assert dash.status_code == 200
+    assert b'<svg' in dash.data
+    assert hist.status_code == 200
+    assert hist.get_json()['samples'][0]['ts'] == 1

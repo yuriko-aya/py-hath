@@ -9,10 +9,12 @@ import shutil
 import socketserver
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse
 
+from hath.dashboard import render_dashboard_html
 from hath.paths import get_cache_dir, get_stats_sock_path
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,8 @@ COUNTER_KEYS = (
 )
 
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+SAMPLE_INTERVAL_SECONDS = 60.0
+HISTORY_MAXLEN = 1440
 
 
 def empty_state() -> dict[str, Any]:
@@ -47,6 +51,107 @@ def empty_state() -> dict[str, Any]:
 
 _state = empty_state()
 _lock = threading.Lock()
+_history: deque[dict[str, Any]] = deque(maxlen=HISTORY_MAXLEN)
+_last_sample_totals: Optional[dict[str, float]] = None
+_last_sample_ts: Optional[float] = None
+_sampler_stop = threading.Event()
+
+
+def _counter_totals(state: dict[str, Any]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for key in COUNTER_KEYS:
+        value = state.get(key, 0)
+        totals[key] = float(value or 0)
+    return totals
+
+
+def compute_sample(
+    current: dict[str, Any],
+    previous: dict[str, float],
+    now: float,
+    prev_ts: float,
+    extra_gauges: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Build a per-minute rate sample from two cumulative snapshots."""
+    elapsed = max(float(now) - float(prev_ts), 1e-9)
+    scale = 60.0 / elapsed
+    hits = max(0.0, float(current.get("cache_hits") or 0) - previous.get("cache_hits", 0))
+    misses = max(0.0, float(current.get("cache_misses") or 0) - previous.get("cache_misses", 0))
+    served = max(0.0, float(current.get("bytes_served") or 0) - previous.get("bytes_served", 0))
+    rpc = max(0.0, float(current.get("rpc_requests") or 0) - previous.get("rpc_requests", 0))
+    rpc_err = max(0.0, float(current.get("rpc_errors") or 0) - previous.get("rpc_errors", 0))
+    galleries = max(
+        0.0,
+        float(current.get("download_galleries_completed") or 0)
+        - previous.get("download_galleries_completed", 0),
+    )
+    total = hits + misses
+    extra = extra_gauges or {}
+    return {
+        "ts": int(now),
+        "hits_per_min": round(hits * scale, 2),
+        "misses_per_min": round(misses * scale, 2),
+        "bytes_per_min": round(served * scale, 2),
+        "rpc_per_min": round(rpc * scale, 2),
+        "rpc_errors_per_min": round(rpc_err * scale, 2),
+        "galleries_per_min": round(galleries * scale, 2),
+        "hit_rate": round(hits / total, 4) if total else None,
+        "download_active": 1 if current.get("download_active") else 0,
+        "cache_size_bytes": extra.get("hath_cache_size_bytes"),
+        "disk_free_bytes": extra.get("hath_disk_free_bytes"),
+    }
+
+
+def take_sample(now: float | None = None) -> dict[str, Any] | None:
+    """Append a history sample. First call only sets the baseline and returns None."""
+    global _last_sample_totals, _last_sample_ts
+    now_ts = time.time() if now is None else now
+    with _lock:
+        current_state = dict(_state)
+    extra = {}
+    try:
+        _cache, extra = _cache_and_disk_gauges()
+    except Exception:
+        extra = {}
+    totals = _counter_totals(current_state)
+    if _last_sample_totals is None or _last_sample_ts is None:
+        _last_sample_totals = totals
+        _last_sample_ts = now_ts
+        return None
+    sample = compute_sample(current_state, _last_sample_totals, now_ts, _last_sample_ts, extra)
+    _last_sample_totals = totals
+    _last_sample_ts = now_ts
+    with _lock:
+        _history.append(sample)
+    return sample
+
+
+def history_samples() -> list[dict[str, Any]]:
+    with _lock:
+        return list(_history)
+
+
+def reset_history() -> None:
+    global _last_sample_totals, _last_sample_ts
+    with _lock:
+        _history.clear()
+    _last_sample_totals = None
+    _last_sample_ts = None
+
+
+def start_history_sampler() -> None:
+    _sampler_stop.clear()
+
+    def _loop() -> None:
+        take_sample()
+        while not _sampler_stop.wait(SAMPLE_INTERVAL_SECONDS):
+            try:
+                take_sample()
+            except Exception as e:
+                logger.debug("History sample failed: %s", e)
+
+    thread = threading.Thread(target=_loop, name="hath-stats-history", daemon=True)
+    thread.start()
 
 
 def apply_deltas(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -214,6 +319,14 @@ class StatsHandler(BaseHTTPRequestHandler):
             body = json.dumps(snapshot_response()).encode("utf-8")
             self._send(200, body, "application/json")
             return
+        if path == "/history":
+            body = json.dumps({"samples": history_samples()}).encode("utf-8")
+            self._send(200, body, "application/json")
+            return
+        if path == "/dashboard":
+            html = render_dashboard_html(history_samples()).encode("utf-8")
+            self._send(200, html, "text/html; charset=utf-8")
+            return
         self._send(404, b"not found", "text/plain")
 
 
@@ -229,6 +342,7 @@ def serve(sock_path: str | None = None) -> None:
         os.unlink(path)
     server = ThreadingUnixHTTPServer(path, StatsHandler)
     os.chmod(path, 0o600)
+    start_history_sampler()
     logger.info("Stats aggregator listening on %s", path)
     try:
         server.serve_forever()
