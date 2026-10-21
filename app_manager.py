@@ -435,7 +435,7 @@ def servercmd(command: str, additional: str, time_param: str, key: str):
             logger.error(f"Threaded proxy test error: {e}")
             return 'Test execution failed', 500, {'Content-Type': 'text/plain'}
 
-    elif command == 'refresh_cert':
+    elif command == 'refresh_cert' or command == 'refresh_certs':
         logger.info("Processing refresh_cert command")
 
         if not hath_config:
