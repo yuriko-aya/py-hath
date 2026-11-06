@@ -43,6 +43,14 @@ import settings
 from hath.http_client import get
 from hath.metrics import record_download_completed, set_download_status
 from hath.paths import get_download_dir
+from hath.rpc_protocol import (
+    DLHASH_RE,
+    contained_gallery_path,
+    gallery_list_hash,
+    is_allowed_download_url,
+    is_allowed_gallery_filetype,
+    is_safe_gallery_filename,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +91,7 @@ def get_queue(downloaded: bool = False, gid: int = 0, minxres: str = '') -> str:
         add = f'{gid};{minxres}'
     else:
         add = ''
-    current_acttime = config_manager.get_current_acttime()
-    actkey_data = f"hentai@home-{act}-{add}-{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
-    actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-    url_path = (
-        f"/15/dl?clientbuild={hath_config.client_build}&act={act}"
-        f"&add={add}&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
-    )
-
+    url_path = config_manager.rpc_path(act, add, endpoint="dl")
     response = rpc_manager._make_rpc_request(url_path, timeout=10)
     return response.text.strip()
 
@@ -136,6 +137,8 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
     logger.debug('Started metadata parsing')
     parse_state = 0
     gallery_txt = ''
+    dlhash = None
+    filelist_lines: list[str] = []
     for metadata_line in metadata.splitlines():
         if  metadata_line == 'FILELIST' and parse_state == 0:
             parse_state = 1
@@ -172,6 +175,12 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
                         logger.error(f'Invalid MINXRES value: {metadata_part[1]}')
                         return False, {}, ''
                 logger.debug(f'Parsed MINXRES: {gallery_info["minxres"]}')
+            elif metadata_part[0] == 'DLHASH':
+                if not DLHASH_RE.match(metadata_part[1]):
+                    logger.error('Invalid DLHASH value: %s', metadata_part[1])
+                    return False, {}, ''
+                dlhash = metadata_part[1]
+                logger.debug('Parsed DLHASH: %s', dlhash)
             elif metadata_part[0] == 'TITLE':
                 original_title = metadata_part[1]
                 clean_title = re.sub(r'[*"\\<>:?]', '', original_title)
@@ -189,6 +198,7 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
                 gallery_info['title'] = clean_title + post_title
                 logger.debug(f'Parsed TITLE: {gallery_info["title"]}')
         elif parse_state == 1:
+            filelist_lines.append(metadata_line)
             file_info = metadata_line.split(' ', 5)
             if len(file_info) < 6:
                 logger.error(f'Invalid file information format: {metadata_line}')
@@ -199,6 +209,12 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
             file_sha1 = file_info[3] if file_info[3] != 'unknown' else ''
             file_type = file_info[4]
             file_name = file_info[5]
+            if not is_safe_gallery_filename(file_name):
+                logger.warning('GalleryDownloader: Invalid filename for page=%s', file_page)
+                return False, {}, ''
+            if not is_allowed_gallery_filetype(file_type):
+                logger.warning('GalleryDownloader: Invalid filetype for page=%s', file_page)
+                return False, {}, ''
             logger.debug(f'Parsed file information: gid={gallery_info["gid"]} page={file_page} fileindex={file_index} xres={file_xres} filetype={file_type} filename={file_name}')
             if 'files' not in gallery_info:
                 gallery_info['files'] = []
@@ -212,6 +228,15 @@ def parse_metadata(metadata: str) -> tuple[bool, dict, str]:
             })
         else:
             gallery_txt += '\n' + metadata_line
+    client_key = getattr(config_manager.Config, 'client_key', '') or ''
+    checked_hash = gallery_list_hash(client_key, filelist_lines)
+    if not dlhash or checked_hash != dlhash:
+        logger.warning(
+            'GalleryDownloader: Aborted download; checkedHash=%s does not match expected dlhash=%s',
+            checked_hash,
+            dlhash,
+        )
+        return False, {}, ''
     return True, gallery_info, gallery_txt
 
 def verify_and_save(file_sha1: str, link: str, file_path: str) -> bool:
@@ -353,28 +378,31 @@ def start_download(gallery_info: dict, gallery_txt: str, dir_path: str) -> bool:
         file_name = file.get('file_name', '')
         file_type = file.get('file_type', 'txt')
         file_sha1 = file.get('file_sha1', '')
-        full_name = f"{file_name}.{file_type}"
-        file_path = Path(dir_path) / full_name
-        current_acttime = config_manager.get_current_acttime()
-        actkey_data = f"hentai@home-{act}-{add}-{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
-        actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
+        file_path = contained_gallery_path(dir_path, file_name, file_type)
+        if file_path is None:
+            logger.error('GalleryDownloader: Attempted creating file outside of its parent directory')
+            return False
         if file_path.exists() and file_path.is_file() and file_path.stat().st_size > 0:
             # Assume non-zero files are valid image files
             logger.debug(f'File already exists and is valid: {file_path}')
             continue
-        url_path = (
-            f"/15/rpc?clientbuild={hath_config.client_build}&act={act}"
-            f"&add={add}&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
+        result = rpc_manager.call_rpc(act, add, timeout=30)
+        logger.debug(
+            'Received download URL response for GID: %s page: %s index: %s: %s',
+            gid,
+            page,
+            index,
+            result.body_text or result.fail_code,
         )
-        file_url = rpc_manager._make_rpc_request(url_path, timeout=30)
-        response = file_url.text.strip()
-        logger.debug(f'Received download URL response for GID: {gid} page: {page} index: {index}: {response}')
         url = []
-        if 'OK' in response:
-            lines = response.splitlines()
-            for line in lines:
-                if line.startswith('http'):
+        if result.ok:
+            for line in result.body_lines:
+                if is_allowed_download_url(line):
+                    if not file_sha1 and line.startswith('http://'):
+                        line = 'https://' + line[7:]
                     url.append(line)
+                elif line:
+                    logger.warning('Invalid protocol for source URL for page=%s', page)
         download_success = False
         if not url:
             logger.error(f'No download links received page {page} for GID: {gid}')

@@ -5,6 +5,7 @@ Run the Hentai@Home Flask client using Gunicorn WSGI server
 import argparse
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -14,7 +15,8 @@ import db_manager as db
 import log_manager
 import settings
 from hath.metrics import flush_metrics, start_metrics_flusher
-from hath.paths import get_cert_path, get_key_path
+from hath.paths import get_cache_dir, get_cert_path, get_key_path
+from hath.rpc_protocol import FatalStartupError
 from hath.stats_client import wait_for_socket
 from hath.validation import validate_startup_config
 
@@ -112,6 +114,30 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _log_startup_disk(hath_config, logger) -> None:
+    """Log assigned cache size vs free space (H@H 1.6.6 startup messaging)."""
+    try:
+        cache_dir = get_cache_dir()
+        usage = shutil.disk_usage(cache_dir)
+        limit = int(hath_config.config.get('disklimit_bytes') or 0)
+        cache_size = db.get_cache_size() or 0
+        gib = 1073741824
+        if limit:
+            available = usage.free + cache_size
+            logger.info(
+                'Cache limit %.0f GiB; disk space available for cache %.0f GiB',
+                limit / gib,
+                available / gib,
+            )
+        if usage.total and usage.free < usage.total * 0.1:
+            logger.warning(
+                'The storage device used for the cache has less than 10%% free space. '
+                'This is fine for SSDs, but HDDs typically need 10-15%% free to avoid fragmentation.'
+            )
+    except Exception as e:
+        logger.debug('Startup disk status unavailable: %s', e)
+
+
 def _validate_runtime_config(hath_config, config, logger) -> bool:
     """Verify host, port, and SSL files before starting or after init-only runs."""
     flask_config = hath_config.config
@@ -193,8 +219,12 @@ def main():
 
     hath_config = config_manager.Config()
 
-    if not config_manager.initialize(config):
-        logger.error('Failed to initialize configuration')
+    try:
+        if not config_manager.initialize(config):
+            logger.error('Failed to initialize configuration')
+            sys.exit(1)
+    except FatalStartupError as e:
+        logger.error('%s (%s)', e, e.code)
         sys.exit(1)
 
     if config['override_log']:
@@ -226,6 +256,8 @@ def main():
     if not cache_manager.cache_validation(force_rescan=force_rescan):
         logger.error('Cache validation failed')
         sys.exit(1)
+
+    _log_startup_disk(hath_config, logger)
 
     if not _validate_runtime_config(hath_config, config, logger):
         sys.exit(1)

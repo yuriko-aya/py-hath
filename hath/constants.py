@@ -1,7 +1,7 @@
 """Shared constants for the H@H Python client."""
 
-CLIENT_VERSION = "0.4.0"
-CLIENT_BUILD = "176"
+CLIENT_VERSION = "0.4.1"
+CLIENT_BUILD = "181"
 
 USER_AGENT = f"Hentai@Home Python Client {CLIENT_VERSION}"
 

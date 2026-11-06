@@ -4,8 +4,30 @@ import time
 import config_manager
 from hath.http_client import get
 from hath.metrics import record_rpc_request
+from hath.rpc_protocol import SignedRpcResult, parse_signed_response
 
 logger = logging.getLogger(__name__)
+
+
+def call_rpc(
+    act: str,
+    add: str = "",
+    *,
+    endpoint: str = "rpc",
+    timeout: int = 10,
+    retry_expired: bool = True,
+) -> SignedRpcResult:
+    """GET a signed API-16 RPC and verify the OK-time-sha1 envelope."""
+    url_path = config_manager.rpc_path(act, add, endpoint=endpoint)
+    response = _make_rpc_request(url_path, timeout=timeout)
+    result = parse_signed_response(response.text, config_manager.Config.client_key)
+    if result.key_expired and retry_expired:
+        logger.warning("Server reported expired key; refreshing time and retrying %s", act)
+        if config_manager.get_server_time():
+            url_path = config_manager.rpc_path(act, add, endpoint=endpoint)
+            response = _make_rpc_request(url_path, timeout=timeout)
+            result = parse_signed_response(response.text, config_manager.Config.client_key)
+    return result
 
 
 def _make_rpc_request(url_path: str, timeout: int = 10):

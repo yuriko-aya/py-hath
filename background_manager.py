@@ -1,5 +1,4 @@
 import atexit
-import hashlib
 import logging
 import os
 import signal
@@ -20,19 +19,11 @@ def notify_client_start() -> bool:
     """Notify the server that the client has started."""
     hath_config = config_manager.Config()
     try:
-        current_acttime = config_manager.get_current_acttime()
-        actkey = config_manager.generate_actkey("client_start")
-        url_path = (f"/15/rpc?clientbuild={hath_config.client_build}&act=client_start"
-                    f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}")
-
-        logger.debug("Notifying server that client has started...")
-        response = rpc_manager._make_rpc_request(url_path, timeout=60)
+        result = rpc_manager.call_rpc("client_start", timeout=60)
 
         logger.debug("Server notification sent successfully")
-        logger.debug(f"Server response: {response.text.strip()}")
-        if 'OK' not in response.text.strip():
-            return False
-        return True
+        logger.debug("Server response: %s", result.body_text or result.fail_code)
+        return result.ok
 
     except Exception as e:
         logger.error(f"Error notifying server of client start: {e}")
@@ -109,20 +100,12 @@ def start_periodic_task():
                     logger.error("Configuration not available for still_alive notification")
                     continue
 
-                # Generate still_alive notification URL
-                current_acttime = config_manager.get_current_acttime()
-                actkey_data = f"hentai@home-still_alive--{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
-                actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-
-                url_path = (
-                    f"/15/rpc?clientbuild={hath_config.client_build}&act=still_alive"
-                    f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
-                )
-
                 logger.info("Sending periodic still_alive notification...")
-                response = rpc_manager._make_rpc_request(url_path, timeout=10)
-
-                logger.debug(f"Still_alive notification sent successfully: {response.text.strip()}")
+                result = rpc_manager.call_rpc("still_alive", timeout=10)
+                logger.debug(
+                    "Still_alive notification sent successfully: %s",
+                    result.body_text or result.fail_code,
+                )
 
                 # Every 540 iterations (approximately every 18 hours), run blacklist cleanup
                 if counter % 540 == 0:
@@ -159,19 +142,12 @@ def notify_client_stop():
 
         logger.info("Sending client_stop notification...")
 
-        # Generate client_stop notification URL
-        current_acttime = config_manager.get_current_acttime()
-        actkey_data = f"hentai@home-client_stop--{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
-        actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-
-        url_path = (
-            f"/15/rpc?clientbuild={hath_config.client_build}&act=client_stop"
-            f"&add=&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
-        )
-
         if config_manager.Config.is_server_ready:
-            response = rpc_manager._make_rpc_request(url_path, timeout=10)
-            logger.debug(f"Client_stop notification sent successfully: {response.text.strip()}")
+            result = rpc_manager.call_rpc("client_stop", timeout=10)
+            logger.debug(
+                "Client_stop notification sent successfully: %s",
+                result.body_text or result.fail_code,
+            )
         else:
             logger.debug('Server is never ready. Skipping stop notification.')
 
