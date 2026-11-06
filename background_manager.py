@@ -178,14 +178,25 @@ def notify_client_stop():
         # Clean up config cache when shutting down
         config_manager.remove_config()
 
+        try:
+            from hath.metrics import flush_metrics
+
+            flush_metrics()
+        except Exception:
+            pass
+
         # Clean up database connections
         db.cleanup_connections()
 
     except Exception as e:
         logger.error(f"Failed to send client_stop notification: {e}")
-        # Still try to clean up config cache even if notification failed
+        try:
+            from hath.metrics import flush_metrics
+
+            flush_metrics()
+        except Exception:
+            pass
         config_manager.remove_config()
-        # Clean up database connections
         db.cleanup_connections()
 
 

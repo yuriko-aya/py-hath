@@ -16,6 +16,7 @@ sequenceDiagram
     RG->>DB: initialize_database()
     RG->>DB: cache_validation()
     RG->>BM: start_background_task()
+    RG->>RG: spawn stats aggregator (Unix socket)
     RG->>GN: gunicorn -c gunicorn.conf.py wsgi:application
     BM->>RPC: client_start (after port ready)
     BM->>BM: periodic still_alive (every 2 min)
@@ -75,6 +76,10 @@ sequenceDiagram
 - **Main process**: `config_manager.initialize()` fetches live config from RPC and writes `config/config.json`
 - **Gunicorn workers**: `create_app()` loads cached JSON via `load_from_config_file()`
 - **Paths**: `settings.py` → `initialize()` → `Config.*` → `hath.paths` helpers
+
+## Metrics aggregation
+
+Workers keep hot counters in memory and POST deltas every ~10s to `config/hath-stats.sock`. The parent process also pushes download gauges. Authenticated `GET /status/<actkey>` and `GET /metrics/<actkey>` on Gunicorn proxy that socket. `/health` is checks-only and is not a Prometheus target.
 
 ## Gunicorn reload (cert refresh)
 

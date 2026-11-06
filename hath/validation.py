@@ -8,6 +8,26 @@ from urllib.parse import urlparse
 from hath.constants import MAX_PORT, MAX_WORKERS, MIN_PORT, VALID_LOG_LEVELS
 
 _PROXY_SCHEMES = frozenset({"http", "https", "socks4", "socks5"})
+_SHA1_HEX_LENGTH = 40
+
+
+def is_sha1_hex(value: str) -> bool:
+    """Return True if value is a 40-character hexadecimal SHA-1 digest."""
+    if len(value) != _SHA1_HEX_LENGTH:
+        return False
+    try:
+        int(value, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def file_id_hash_part(file_id: str) -> str | None:
+    """Extract the SHA-1 portion from a H@H file_id, or None if invalid."""
+    hash_part = file_id.split('-', 1)[0] if '-' in file_id else file_id
+    if is_sha1_hex(hash_part):
+        return hash_part
+    return None
 
 
 def validate_proxy_url(proxy: str | None, name: str) -> list[str]:

@@ -7,12 +7,15 @@ import logging
 import os
 import subprocess
 import sys
+from typing import Optional
 
 import config_manager
 import db_manager as db
 import log_manager
 import settings
+from hath.metrics import flush_metrics, start_metrics_flusher
 from hath.paths import get_cert_path, get_key_path
+from hath.stats_client import wait_for_socket
 from hath.validation import validate_startup_config
 
 
@@ -129,6 +132,40 @@ def _validate_runtime_config(hath_config, config, logger) -> bool:
     return True
 
 
+def _start_stats_process(config_dir: str, logger) -> Optional[subprocess.Popen]:
+    sock_path = os.path.join(config_dir, 'hath-stats.sock')
+    os.environ['HATH_STATS_SOCK'] = sock_path
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    env = os.environ.copy()
+    env['HATH_STATS_SOCK'] = sock_path
+    env['PYTHONPATH'] = app_dir + os.pathsep + env.get('PYTHONPATH', '')
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, '-m', 'hath.stats_server'],
+            cwd=app_dir,
+            env=env,
+        )
+    except Exception as e:
+        logger.warning('Failed to start stats aggregator: %s', e)
+        return None
+    if wait_for_socket(sock_path):
+        logger.info('Stats aggregator ready on %s', sock_path)
+    else:
+        logger.warning('Stats aggregator did not become ready on %s', sock_path)
+    return proc
+
+
+def _stop_stats_process(proc: Optional[subprocess.Popen], logger) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        logger.warning('Stats aggregator did not exit; killing')
+        proc.kill()
+
+
 def main():
     parser = _build_arg_parser()
     args = parser.parse_args()
@@ -199,6 +236,9 @@ def main():
 
     import background_manager
 
+    stats_proc = _start_stats_process(config['config_dir'], logger)
+    start_metrics_flusher(include_gauges=True)
+
     background_manager.setup_shutdown_handlers()
     background_manager.start_background_task()
 
@@ -257,6 +297,9 @@ def main():
     except FileNotFoundError:
         logger.error('Gunicorn not found - please install with: pip install gunicorn')
         sys.exit(1)
+    finally:
+        flush_metrics(include_gauges=True)
+        _stop_stats_process(stats_proc, logger)
 
 
 if __name__ == '__main__':

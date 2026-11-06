@@ -38,6 +38,10 @@ def get_config_cache_path() -> str:
     return os.path.join(get_config_dir(), "config.json")
 
 
+def get_stats_sock_path() -> str:
+    return os.environ.get("HATH_STATS_SOCK") or os.path.join(get_config_dir(), "hath-stats.sock")
+
+
 def get_cert_path() -> str:
     return os.path.join(get_data_dir(), "client.crt")
 
