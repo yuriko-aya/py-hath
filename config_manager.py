@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.serialization import pkcs12
 import rpc_manager
 from hath.constants import CLIENT_BUILD
 from hath.paths import get_config_cache_path, get_config_dir
+from hath.rpc_protocol import FatalStartupError, raise_if_fatal_login, rpc_url_path
 
 logger = logging.getLogger(__name__)
 
@@ -189,16 +190,16 @@ def get_server_time() -> bool:
     """Get server time from remote server."""
     try:
         local_time_before = int(time.time())
-        url_path = f'/15/rpc?clientbuild={Config.client_build}&act=server_stat'
-        response = rpc_manager._make_rpc_request(url_path, timeout=10)
+        result = rpc_manager.call_rpc("server_stat", timeout=10, retry_expired=False)
+        if not result.ok:
+            logger.error("Server did not return OK status for server_stat: %s", result.fail_code)
+            return False
 
-        # Parse key=value format
-        for line in response.text.strip().split('\n'):
+        for line in result.body_lines:
             if '=' in line:
                 key, value = line.split('=', 1)
                 if key.strip() == 'server_time':
                     server_time = int(value.strip())
-                    # Calculate time difference: server_time - local_time
                     time_difference = server_time - local_time_before
                     Config.server_time = server_time
                     logger.debug(f"Server time: {server_time}")
@@ -218,41 +219,45 @@ def get_current_acttime() -> int:
     current_local_time = int(time.time())
     return current_local_time + (Config.time_difference or 0)
 
-def generate_actkey(act: str, add: str = "") -> str:
+def generate_actkey(act: str, add: str = "", acttime: int | None = None) -> str:
     """Generate actkey for authentication."""
-    # actkey is SHA-1 hash of "hentai@home-{act}-{add}-{client_id}-{current_time}-{client_key}"
-    current_acttime = get_current_acttime()
+    current_acttime = get_current_acttime() if acttime is None else acttime
     data = f"hentai@home-{act}-{add}-{Config.client_id}-{current_acttime}-{Config.client_key}"
     return hashlib.sha1(data.encode()).hexdigest()
+
+
+def rpc_path(act: str, add: str = "", endpoint: str = "rpc") -> str:
+    """Build a signed API-16 RPC (or /dl) URL path."""
+    current_acttime = get_current_acttime()
+    actkey = generate_actkey(act, add, acttime=current_acttime)
+    return rpc_url_path(
+        act,
+        add,
+        endpoint=endpoint,
+        client_build=Config.client_build,
+        client_id=Config.client_id,
+        acttime=current_acttime,
+        actkey=actkey,
+    )
 
 def get_client_config(force_refresh=False) -> bool:
     """Get client configuration from remote server."""
     try:
-        current_acttime = get_current_acttime()
-        if force_refresh:
-            actkey = generate_actkey("client_settings")
-            url_path = (f"/15/rpc?clientbuild={Config.client_build}&act=client_settings"
-                    f"&cid={Config.client_id}&acttime={current_acttime}&actkey={actkey}")
-        else:
-            actkey = generate_actkey("client_login")
-            url_path = (f"/15/rpc?clientbuild={Config.client_build}&act=client_login"
-                    f"&cid={Config.client_id}&acttime={current_acttime}&actkey={actkey}")
-
-        response = rpc_manager._make_rpc_request(url_path, timeout=10)
-
-        response_text = response.text.strip()
-
-        # Must have "OK" in response for success
-        if "OK" not in response_text:
-            logger.error(f"Server did not return OK status: {response_text}")
+        act = "client_settings" if force_refresh else "client_login"
+        result = rpc_manager.call_rpc(act, timeout=10)
+        if not result.ok:
+            raise_if_fatal_login(result.fail_code or "")
+            logger.error("Server did not return OK status: %s", result.fail_code)
             return False
+
+        response_text = result.body_text
 
         # If disable_logging is set, but not in return, remove it from config
         if Config.config.get('disable_logging') and 'disable_logging' not in response_text:
             Config.config.pop('disable_logging', None)
 
         # Parse key=value format for successful responses
-        for line in response_text.split('\n'):
+        for line in result.body_lines:
             if '=' in line:
                 key, value = line.split('=', 1)
                 key = key.strip()
@@ -304,6 +309,8 @@ def get_client_config(force_refresh=False) -> bool:
         save_config_cache()
         return True
 
+    except FatalStartupError:
+        raise
     except Exception as e:
         logger.error(f"Error getting client config: {e}")
         return False
@@ -388,10 +395,7 @@ def get_ssl_certificate(force_refresh: bool = False) -> bool:
         logger.debug("Force refresh requested, downloading new certificate...")
 
     try:
-        current_acttime = get_current_acttime()
-        actkey = generate_actkey("get_cert")
-        url_path = (f"/15/rpc?clientbuild={Config.client_build}&act=get_cert"
-                    f"&add=&cid={Config.client_id}&acttime={current_acttime}&actkey={actkey}")
+        url_path = rpc_path("get_cert")
 
         logger.debug("Downloading new SSL certificate...")
         response = rpc_manager._make_rpc_request(url_path, timeout=30)

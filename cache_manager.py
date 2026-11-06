@@ -124,23 +124,15 @@ def blacklist_process(timespan: int):
         logger.error("Missing hath_config, client_id or client_key for remote fetch")
         return False, None
     # Prepare actkey and acttime
-    current_acttime = config_manager.get_current_acttime()
     add = str(timespan)
-    # actkey is SHA-1 of "hentai@home-srfetch-{add}-{client_id}-{current_acttime}-{client_key}"
     if not hath_config or not hath_config.client_id or not hath_config.client_key:
         logger.error("Missing client_id or client_key for remote fetch")
         return False, None
-    actkey_data = f"hentai@home-get_blacklist-{add}-{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
-    actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-    url_path = (
-        f"/15/rpc?clientbuild={hath_config.client_build}&act=get_blacklist"
-        f"&add={add}&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
-    )
-    resp = rpc_manager._make_rpc_request(url_path, timeout=20)
+    result = rpc_manager.call_rpc("get_blacklist", add, timeout=20)
     delete_count = 0
-    if 'OK' in resp.text:
-        logger.debug(f'Receive response {resp.text}')
-        for line in resp.text.splitlines():
+    if result.ok:
+        logger.debug('Receive blacklist response (%s lines)', len(result.body_lines))
+        for line in result.body_lines:
             if '-' in line:
                 static_range = line[:4]
                 file_path = cache_file_path(line)
@@ -207,25 +199,17 @@ def fetch_remote_file(fileindex: str, xres: str, file_id: str):
             logger.error("Missing hath_config, client_id or client_key for remote fetch")
             return False, None
         # Prepare actkey and acttime
-        current_acttime = config_manager.get_current_acttime()
         add = f"{fileindex};{xres};{file_id}"
-        # actkey is SHA-1 of "hentai@home-srfetch-{add}-{client_id}-{current_acttime}-{client_key}"
         if not hath_config or not hath_config.client_id or not hath_config.client_key:
             logger.error("Missing client_id or client_key for remote fetch")
             return False, None
-        actkey_data = f"hentai@home-srfetch-{add}-{hath_config.client_id}-{current_acttime}-{hath_config.client_key}"
-        actkey = hashlib.sha1(actkey_data.encode()).hexdigest()
-        url_path = (
-            f"/15/rpc?clientbuild={hath_config.client_build}&act=srfetch"
-            f"&add={add}&cid={hath_config.client_id}&acttime={current_acttime}&actkey={actkey}"
-        )
-        logger.debug(f"Fetching file location via RPC: {url_path}")
-        resp = rpc_manager._make_rpc_request(url_path, timeout=20)
-        # Find the first line starting with http
+        logger.debug("Fetching file location via RPC srfetch")
+        result = rpc_manager.call_rpc("srfetch", add, timeout=20)
         urls = []
-        for line in resp.text.splitlines():
-            if line.startswith('http'):
-                urls.append(line.strip())
+        if result.ok:
+            for line in result.body_lines:
+                if line.startswith('http'):
+                    urls.append(line.strip())
         if not urls:
             logger.error("No valid URL found in srfetch response")
             return False, None
