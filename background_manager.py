@@ -15,6 +15,14 @@ import storage_manager
 
 logger = logging.getLogger(__name__)
 
+
+def resolve_listen_port(hath_config) -> int:
+    """Port Gunicorn binds: CLI/settings override, otherwise the server-assigned port."""
+    if hath_config.override_port:
+        return int(hath_config.hath_port)
+    return int(hath_config.config.get('port', 5000))
+
+
 def notify_client_start() -> bool:
     """Notify the server that the client has started."""
     hath_config = config_manager.Config()
@@ -44,7 +52,7 @@ def start_background_task():
             return
 
         host = hath_config.config.get('host', '0.0.0.0')
-        port = int(hath_config.config.get('port', 5000))
+        port = resolve_listen_port(hath_config)
 
         # Convert 0.0.0.0 to localhost for local checking
         check_host = 'localhost' if host == '0.0.0.0' else host
