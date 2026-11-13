@@ -1,17 +1,13 @@
-"""Path helpers resolved from config_manager.Config."""
+"""Path helpers resolved from the config singleton."""
 
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import config_manager
 
 
-def _cfg() -> "config_manager.Config":
-    import config_manager
-    return config_manager.Config
+def _cfg():
+    from hath.config import current_config
+    return current_config()
 
 
 def get_data_dir() -> str:

@@ -1,0 +1,114 @@
+"""Signed H@H RPC client."""
+
+from __future__ import annotations
+
+import logging
+import time
+
+from hath.http_client import get
+from hath.metrics import record_rpc_request
+from hath.rpc_protocol import SignedRpcResult, parse_signed_response
+
+logger = logging.getLogger(__name__)
+
+
+def call_rpc(
+    act: str,
+    add: str = "",
+    *,
+    endpoint: str = "rpc",
+    timeout: int = 10,
+    retry_expired: bool = True,
+) -> SignedRpcResult:
+    """GET a signed API-16 RPC and verify the OK-time-sha1 envelope."""
+    from hath.config import current_config, get_server_time, rpc_path
+
+    url_path = rpc_path(act, add, endpoint=endpoint)
+    response = _make_rpc_request(url_path, timeout=timeout)
+    result = parse_signed_response(response.text, current_config().client_key)
+    if result.key_expired and retry_expired:
+        logger.warning("Server reported expired key; refreshing time and retrying %s", act)
+        if get_server_time():
+            url_path = rpc_path(act, add, endpoint=endpoint)
+            response = _make_rpc_request(url_path, timeout=timeout)
+            result = parse_signed_response(response.text, current_config().client_key)
+    return result
+
+
+def _make_rpc_request(url_path: str, timeout: int = 10):
+    """Make RPC request with failover logic."""
+    from hath.config import _get_rpc_host, _handle_rpc_failure, get_config
+
+    hath_config = get_config()
+
+    proxies = {}
+    if hath_config.rpc_proxy:
+        proxies.update({
+            "http": hath_config.rpc_proxy,
+            "https": hath_config.rpc_proxy,
+        })
+
+    if "act=server_stat" in url_path or "act=client_login" in url_path:
+        url = f"http://{hath_config.rpc_fallback_domain}{url_path}"
+        logger.debug(f"Making RPC request to fallback domain: {url} via proxy: {hath_config.rpc_proxy}")
+        return _request_with_metrics(url, timeout, proxies)
+
+    if not hath_config.rpc_server_ips:
+        url = f"http://{hath_config.rpc_fallback_domain}{url_path}"
+        logger.debug(
+            f"No RPC IP list available, using fallback domain: {url} via proxy: {hath_config.rpc_proxy}"
+        )
+        return _request_with_metrics(url, timeout, proxies)
+
+    ip_attempts = 0
+    max_ip_attempts = len(hath_config.rpc_server_ips)
+
+    while ip_attempts < max_ip_attempts:
+        current_host = _get_rpc_host()
+        url = f"http://{current_host}{url_path}"
+
+        retry_attempts = 0
+        max_retries = 3
+
+        while retry_attempts < max_retries:
+            try:
+                if retry_attempts == 0:
+                    logger.debug(f"Making RPC request to: {url} via proxy: {hath_config.rpc_proxy}")
+                else:
+                    logger.debug(
+                        f"Retrying RPC request to {current_host} (attempt {retry_attempts + 1}/{max_retries})"
+                    )
+
+                return _request_with_metrics(url, timeout, proxies)
+
+            except Exception as e:
+                retry_attempts += 1
+                if retry_attempts < max_retries:
+                    logger.warning(
+                        f"RPC request failed to {current_host} (attempt {retry_attempts}/{max_retries}): {e}"
+                    )
+                    time.sleep(1)
+                else:
+                    logger.warning(f"RPC request failed to {current_host} after {max_retries} attempts: {e}")
+
+        _handle_rpc_failure()
+        ip_attempts += 1
+
+        if ip_attempts < max_ip_attempts:
+            logger.debug(f"Moving to next RPC server: {_get_rpc_host()}")
+
+    logger.error("All RPC server IPs failed, trying fallback domain as last resort")
+    url = f"http://{hath_config.rpc_fallback_domain}{url_path}"
+    return _request_with_metrics(url, timeout, proxies)
+
+
+def _request_with_metrics(url: str, timeout: int, proxies: dict):
+    start = time.perf_counter()
+    try:
+        response = get(url, timeout=timeout, proxies=proxies or None)
+        response.raise_for_status()
+        record_rpc_request((time.perf_counter() - start) * 1000)
+        return response
+    except Exception:
+        record_rpc_request((time.perf_counter() - start) * 1000, error=True)
+        raise

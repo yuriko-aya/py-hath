@@ -231,9 +231,9 @@ def _cache_and_disk_gauges() -> tuple[dict[str, Any], dict[str, float]]:
     cache: dict[str, Any] = {}
     gauges: dict[str, float] = {}
     try:
-        import db_manager
+        from hath import db
 
-        cache = db_manager.get_cache_stats() or {}
+        cache = db.get_cache_stats() or {}
         if cache.get("cache_count") is not None:
             gauges["hath_cache_files_total"] = float(cache["cache_count"])
         if cache.get("cache_size_bytes") is not None:
@@ -355,9 +355,9 @@ def serve(sock_path: str | None = None) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     try:
-        import config_manager
+        from hath.config import load_from_config_file
 
-        config_manager.load_from_config_file()
+        load_from_config_file()
     except Exception as e:
         logger.debug("Stats server continuing without config cache: %s", e)
     serve()

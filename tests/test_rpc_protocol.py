@@ -1,7 +1,7 @@
 import hashlib
 from unittest.mock import MagicMock, patch
 
-import config_manager
+from hath.config import Config, generate_actkey, get_client_config, replace_config
 from hath.rpc_protocol import (
     FatalStartupError,
     contained_gallery_path,
@@ -88,12 +88,11 @@ def test_fatal_startup_codes():
 def test_get_client_config_exits_on_startup_loop():
     from hath.rpc_protocol import SignedRpcResult
 
-    config_manager.Config.client_id = "1"
-    config_manager.Config.client_key = "key"
+    replace_config(Config(client_id="1", client_key="key"))
     fail = SignedRpcResult(ok=False, fail_code="FAIL_STARTUP_LOOP")
-    with patch("rpc_manager.call_rpc", return_value=fail):
+    with patch("hath.rpc.call_rpc", return_value=fail):
         try:
-            config_manager.get_client_config()
+            get_client_config()
             assert False, "expected FatalStartupError"
         except FatalStartupError:
             pass
@@ -109,11 +108,10 @@ def test_contained_gallery_path_blocks_traversal(tmp_path):
 
 
 def test_call_rpc_retries_key_expired():
-    from hath.rpc_protocol import SignedRpcResult
-    import rpc_manager
+    from hath.rpc import call_rpc
 
     key = "secretclientkey12345"
-    config_manager.Config.client_key = key
+    replace_config(Config(client_key=key))
     ok_text = _signed_ok(key, ["still_alive"])
 
     expired = MagicMock()
@@ -121,18 +119,16 @@ def test_call_rpc_retries_key_expired():
     ok_resp = MagicMock()
     ok_resp.text = ok_text
 
-    with patch("config_manager.rpc_path", return_value="/16/rpc?act=still_alive"), patch(
-        "config_manager.get_server_time", return_value=True
-    ), patch("rpc_manager._make_rpc_request", side_effect=[expired, ok_resp]):
-        result = rpc_manager.call_rpc("still_alive")
+    with patch("hath.config.rpc_path", return_value="/16/rpc?act=still_alive"), patch(
+        "hath.config.get_server_time", return_value=True
+    ), patch("hath.rpc._make_rpc_request", side_effect=[expired, ok_resp]):
+        result = call_rpc("still_alive")
     assert result.ok
     assert result.body_lines == ["still_alive"]
 
 
 def test_generate_actkey_uses_explicit_acttime():
-    config_manager.Config.client_id = "99"
-    config_manager.Config.client_key = "key"
-    config_manager.Config.time_difference = 0
-    actkey = config_manager.generate_actkey("test_act", "add", acttime=42)
+    replace_config(Config(client_id="99", client_key="key", time_difference=0))
+    actkey = generate_actkey("test_act", "add", acttime=42)
     expected = hashlib.sha1(b"hentai@home-test_act-add-99-42-key").hexdigest()
     assert actkey == expected

@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
-from app_manager import app, parse_additional_params
+from hath.http.app import app
+from hath.http.params import parse_additional_params
 
 
 def test_parse_additional_params():
@@ -33,8 +34,8 @@ def test_status_proxies_aggregator():
         'download': {'active': False, 'last_error': '', 'galleries_completed': 0},
         'cache': {},
     }
-    with patch('app_manager._status_actkey_ok', return_value=True), patch(
-        'app_manager.get_status', return_value=snapshot
+    with patch('hath.http.status._status_actkey_ok', return_value=True), patch(
+        'hath.http.status.get_status', return_value=snapshot
     ):
         response = client.get('/status/dummy')
     assert response.status_code == 200
@@ -49,9 +50,9 @@ def test_metrics_proxy_forbidden_without_key():
 
 def test_dashboard_and_history_proxy():
     client = app.test_client()
-    with patch('app_manager._status_actkey_ok', return_value=True), patch(
-        'app_manager.get_dashboard', return_value=b'<html><svg></svg></html>'
-    ), patch('app_manager.get_history', return_value={'samples': [{'ts': 1}]}):
+    with patch('hath.http.status._status_actkey_ok', return_value=True), patch(
+        'hath.http.status.get_dashboard', return_value=b'<html><svg></svg></html>'
+    ), patch('hath.http.status.get_history', return_value={'samples': [{'ts': 1}]}):
         dash = client.get('/dashboard/dummy')
         hist = client.get('/history/dummy')
     assert dash.status_code == 200

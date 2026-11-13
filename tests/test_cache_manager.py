@@ -1,7 +1,7 @@
 import hashlib
 from unittest.mock import MagicMock
 
-import cache_manager
+import hath.cache as cache_manager
 
 
 def test_verify_file_integrity(tmp_path):

@@ -1,0 +1,338 @@
+import hashlib
+import logging
+import os
+import shutil
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from hath import db
+from hath.config import get_config
+from hath.http_client import get
+from hath.paths import cache_file_path, cache_range_dir, get_cache_dir
+from hath.rpc import call_rpc
+
+logger = logging.getLogger(__name__)
+
+
+def delete_static_range(static_range: str):
+    '''Delete static range and all file inside it'''
+    dir_path = cache_range_dir(static_range)
+    if not os.path.exists(dir_path) or not os.path.isdir(dir_path):
+        logger.warning(f"Directory for static range {static_range} does not exist: {dir_path}")
+        db.remove_static_range(static_range)
+        return
+    files = [p for p in Path(dir_path).glob('*') if p.is_file()]
+    for file in files:
+        file_size = file.stat().st_size
+        db.update_file_count(static_range, removal=True)
+        db.update_file_size(file_size, removal=True)
+    shutil.rmtree(dir_path)
+    db.remove_static_range(static_range)
+
+def cache_validation(force_rescan=False):
+    """Validate the cache state before notifying the server."""
+    logger.info("Starting cache validation...")
+    hath_config = get_config()
+    if not hath_config or not hath_config.client_id or not hath_config.client_key:
+        logger.error("Configuration not available for cache validation")
+        return False
+
+    try:
+        cache_dir = get_cache_dir()
+        static_range = hath_config.static_range
+        if not static_range or len(static_range) == 0:
+            logger.debug("No static range defined, skipping cache validation")
+            return True  # Nothing to validate
+        illegal_static_range = []
+        if not force_rescan:
+            logger.debug("Loading data from database...")
+            local_static_range = db.get_static_range_list()
+            if len(local_static_range) == 0:
+                logger.warning("Database is empty... rescanning...")
+            elif set(local_static_range).issubset(set(static_range)):
+                logger.info("All static ranges in database are in the given list, skipping cache validation")
+                return True # All prefixes are valid
+            else:
+                illegal_static_range = list(set(local_static_range) - set(static_range))
+        if illegal_static_range and not force_rescan:
+            logger.warning(f"Found {len(illegal_static_range)} illegal static ranges {illegal_static_range}. Cleaning it up...")
+            for prefix in illegal_static_range:
+                logger.debug(f"Deleting illegal static range {prefix} and all files inside it...")
+                delete_static_range(prefix)
+            return True
+        if force_rescan:
+            db.clean_up_data()
+            logger.debug("Missing/empty database or force rescan requested, proceeding with full cache validation...")
+            logger.debug("loading cache...")
+            files = [p for p in Path(cache_dir).glob("*/*/*") if p.is_file()]
+            file_count = len(files)
+            if not files or len(files) == 0:
+                logger.info("Cache is empty. Skipping validation")
+                return True
+
+            ten_percent = max(1, file_count // 10)  # Avoid division by zero
+            verified_count = 0
+            verified_percent = 0
+            deleted_count = 0
+            corrupt_count = 0
+            logger.debug(f"Starting cache validation... ({file_count} files to verify)")
+            for file in files:
+                static_name = file.name[:4]
+                if verified_count > 0:
+                    if verified_count % ten_percent == 0:
+                        logger.debug(f"Cache validation... ({verified_percent:.1f}%)")
+
+                    if file_count > 100000 and verified_count % 10000 == 0:
+                        logger.debug(f"Cache validation... ({verified_count}/{file_count} files verified)")
+
+                if static_name not in static_range:
+                    os.remove(file)
+                    deleted_count += 1
+                    logger.debug(f"Deleted file outside static range: {file}")
+                elif not verify_file_integrity(str(file), file.name):
+                    os.remove(file)
+                    corrupt_count += 1
+                    logger.debug(f"Deleted corrupt file during rescan: {file}")
+                else:
+                    db.update_file_count(static_name)
+                    db.update_file_size(file.stat().st_size)
+
+                verified_count += 1
+                verified_percent = (verified_count / file_count) * 100
+
+            logger.info("Cache validation completed successfully")
+            if deleted_count > 0:
+                logger.warning(f"Deleted {deleted_count} files outside of static range")
+            if corrupt_count > 0:
+                logger.warning(f"Deleted {corrupt_count} files failing SHA-1 integrity check")
+
+        return True
+
+    except OSError as e:
+        logger.error(f"Error accessing cache directory: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error during cache validation: {e}")
+        return False
+
+def blacklist_process(timespan: int):
+    logger.debug(f"Processing blacklist for timespan: {timespan}")
+    # Check hath_config before using it
+    hath_config = get_config()
+    if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
+        logger.error("Missing hath_config, client_id or client_key for remote fetch")
+        return False, None
+    # Prepare actkey and acttime
+    add = str(timespan)
+    if not hath_config or not hath_config.client_id or not hath_config.client_key:
+        logger.error("Missing client_id or client_key for remote fetch")
+        return False, None
+    result = call_rpc("get_blacklist", add, timeout=20)
+    delete_count = 0
+    if result.ok:
+        logger.debug('Receive blacklist response (%s lines)', len(result.body_lines))
+        for line in result.body_lines:
+            if '-' in line:
+                static_range = line[:4]
+                file_path = cache_file_path(line)
+                if os.path.exists(file_path):
+                    file_size = Path(file_path).stat().st_size
+                    os.remove(file_path)
+                    db.update_file_count(static_range, removal=True)
+                    db.update_file_size(file_size, removal=True)
+                    delete_count += 1
+
+    return delete_count
+
+def verify_file_integrity(file_path: str, file_id: str) -> bool:
+    """Verify the integrity of the cached file by comparing its SHA-1 hash with the file_id."""
+    if '-' in file_id:
+        expected_hash = file_id.split('-', 1)[0]
+    else:
+        expected_hash = file_id
+
+    try:
+        sha1 = hashlib.sha1()
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(8192):
+                sha1.update(chunk)
+        file_hash = sha1.hexdigest()
+        if file_hash != expected_hash:
+            logger.debug(
+                f"File integrity check failed for {file_path}: expected {expected_hash}, got {file_hash}"
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error verifying file integrity: {e}")
+        return False
+
+
+def _record_cached_file(file_path: str, file_id: str, file_size: int = 0) -> bool:
+    """Verify a newly written cache file and update database metadata."""
+    if not verify_file_integrity(file_path, file_id):
+        logger.warning(f"Discarding corrupt cached file: {file_path}")
+        try:
+            os.remove(file_path)
+        except OSError as e:
+            logger.error(f"Error removing corrupt cached file {file_path}: {e}")
+        return False
+
+    static_name = file_id[:4]
+    logger.debug(f"File cached at: {file_path}")
+    db.update_last_access(static_name, new_file=True)
+    if not file_size:
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError:
+            file_size = 0
+    if file_size:
+        db.update_file_size(file_size)
+    return True
+
+def fetch_remote_file(fileindex: str, xres: str, file_id: str):
+    try:
+        # Check hath_config before using it
+        hath_config = get_config()
+        if not hath_config or not getattr(hath_config, 'client_id', None) or not getattr(hath_config, 'client_key', None):
+            logger.error("Missing hath_config, client_id or client_key for remote fetch")
+            return False, None
+        # Prepare actkey and acttime
+        add = f"{fileindex};{xres};{file_id}"
+        if not hath_config or not hath_config.client_id or not hath_config.client_key:
+            logger.error("Missing client_id or client_key for remote fetch")
+            return False, None
+        logger.debug("Fetching file location via RPC srfetch")
+        result = call_rpc("srfetch", add, timeout=20)
+        urls = []
+        if result.ok:
+            for line in result.body_lines:
+                if line.startswith('http'):
+                    urls.append(line.strip())
+        if not urls:
+            logger.error("No valid URL found in srfetch response")
+            return False, None
+        logger.debug(f"Found {len(urls)} URLs in srfetch response: {urls}")
+        proxies = {}
+        if hath_config.download_proxy:
+            proxies.update({
+                'http': hath_config.download_proxy,
+                'https': hath_config.download_proxy
+            })
+
+        for url in urls:
+            for attempt in range(1, 4):
+                try:
+                    logger.debug(f"Attempt {attempt} - Downloading file from: {url}")
+                    file_resp = get(url, timeout=10, stream=True, proxies=proxies or None)
+                    file_resp.raise_for_status()
+                    logger.debug(f"Successfully downloaded from {url}")
+                    return True, file_resp
+                except Exception as e:
+                    logger.error(f"Attempt {attempt} - Failed to download {url}: {e}")
+            logger.error(f"Max retries reached for {url}")
+        logger.error(f"All URLs {urls} failed to download")
+        return False, None
+
+    except Exception as e:
+        logger.error(f"Remote fetch or download failed: {e}")
+        return False, None
+
+def get_throttled_speed():
+    hath_config = get_config()
+    chunk_size = 8192
+    if not hath_config:
+        logger.error("hath_config not available for throttled speed calculation")
+        return 0
+
+    config_throttled_bytes = hath_config.server.get('throttle_bytes')
+    try:
+        speed = int(config_throttled_bytes) if config_throttled_bytes is not None else 0
+    except (ValueError, TypeError):
+        logger.error(f"Invalid throttle_bytes configuration: {config_throttled_bytes}")
+        speed = 0
+
+    # Calculate sleep time based on throttled speed
+    if speed > 0:
+        sleep_time = chunk_size / speed
+    else:
+        sleep_time = 0
+
+    return sleep_time
+
+def generate_and_cache(file_path, file_id, file_resp, file_size):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    sleep_time = get_throttled_speed()
+    success = True
+    try:
+        with open(file_path, 'wb') as cache_file:
+            for chunk in file_resp.iter_content(chunk_size=8192):
+                if chunk:
+                    cache_file.write(chunk)
+                    yield chunk
+                    time.sleep(sleep_time)
+    except Exception as e:
+        logger.error(f"Error generating and caching file {file_path}: {e}")
+        yield b''  # Yield empty bytes on error to avoid breaking the response
+        success = False
+    finally:
+        if success and not _record_cached_file(file_path, file_id, file_size):
+            success = False
+
+def serve_from_file(file_path, file_id):
+    sleep_time = get_throttled_speed()
+    static_name = file_id[:4]
+
+    try:
+        with open(file_path, 'rb') as img_file:
+            while chunk := img_file.read(8192):
+                yield chunk
+                time.sleep(sleep_time)
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        yield b''  # Yield empty bytes on error to avoid breaking the response
+    finally:
+        db.update_last_access(static_name)
+
+def prune_cache():
+    '''Prune oldest cache due size limit'''
+    oldest_static_file, time_stamp = db.get_oldest_static_range()
+    one_week_ago = datetime.now() - timedelta(weeks=1)
+    if oldest_static_file and time_stamp:
+        static_range_time = datetime.fromtimestamp(time_stamp)
+        if static_range_time > one_week_ago:
+            logger.error('Oldest static file is less than one week old, not pruning.')
+            return False
+        else:
+            logger.info(f"Pruned oldest static file from cache: {oldest_static_file} due to cache size constraint")
+            delete_static_range(oldest_static_file)
+
+def check_cache_size():
+    """Check the current cache size and log it."""
+    hath_config = get_config()
+    if not hath_config:
+        logger.error("hath_config not available for cache size check")
+        return
+
+    current_cache_size = db.get_cache_size()
+    cache_size_limit  = hath_config.server.get('disklimit_bytes')
+
+    try:
+        max_cache_size = int(cache_size_limit) if cache_size_limit is not None else 0
+    except (TypeError, ValueError):
+        logger.warning(f'Invalid disklimit_bytes value in config: {cache_size_limit!r}')
+        max_cache_size = 0  # fallback to no limit
+
+    if current_cache_size == 0 or max_cache_size == 0:
+        logger.warning('Get zero bytes cache size! Either cache empty or there is problem. Assuming OK')
+        return True
+
+    if max_cache_size > 0 and current_cache_size > max_cache_size:
+        logger.warning(f'Cache size limit exceeded: current={current_cache_size} bytes, limit={max_cache_size} bytes')
+        logger.warning('Start cleaning old static range')
+        prune_cache()
+        return True
+    else:
+        logger.debug(f'Cache size is within limits: current={current_cache_size} bytes, limit={max_cache_size} bytes')
+        return True

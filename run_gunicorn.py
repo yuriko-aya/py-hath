@@ -10,10 +10,10 @@ import subprocess
 import sys
 from typing import Optional
 
-import config_manager
-import db_manager as db
-import log_manager
 import settings
+from hath import db
+from hath.config import get_config, initialize
+from hath.logging import set_file_log_level, setup_file_logging
 from hath.metrics import flush_metrics, start_metrics_flusher
 from hath.paths import get_cache_dir, get_cert_path, get_key_path
 from hath.rpc_protocol import FatalStartupError
@@ -119,7 +119,7 @@ def _log_startup_disk(hath_config, logger) -> None:
     try:
         cache_dir = get_cache_dir()
         usage = shutil.disk_usage(cache_dir)
-        limit = int(hath_config.config.get('disklimit_bytes') or 0)
+        limit = int(hath_config.server.get('disklimit_bytes') or 0)
         cache_size = db.get_cache_size() or 0
         gib = 1073741824
         if limit:
@@ -140,7 +140,7 @@ def _log_startup_disk(hath_config, logger) -> None:
 
 def _validate_runtime_config(hath_config, config, logger) -> bool:
     """Verify host, port, and SSL files before starting or after init-only runs."""
-    flask_config = hath_config.config
+    flask_config = hath_config.server
     host = flask_config.get('host')
     port = config['hath_port'] if config['override_port'] else flask_config.get('port')
 
@@ -213,14 +213,14 @@ def main():
     os.makedirs(config['download_dir'], exist_ok=True)
     os.makedirs(config['config_dir'], exist_ok=True)
 
-    log_manager.setup_file_logging(config['log_dir'], json_logs=config['json_logs'])
+    setup_file_logging(config['log_dir'], json_logs=config['json_logs'])
     logger = logging.getLogger(__name__)
     logger.info('Initializing Hentai@Home client for Gunicorn deployment...')
 
-    hath_config = config_manager.Config()
+    hath_config = get_config()
 
     try:
-        if not config_manager.initialize(config):
+        if not initialize(config):
             logger.error('Failed to initialize configuration')
             sys.exit(1)
     except FatalStartupError as e:
@@ -235,16 +235,16 @@ def main():
             sys.exit(1)
         logger.info(f'Log level overridden to {log_level}')
         logging.getLogger().setLevel(numeric_level)
-        log_manager.set_file_log_level(numeric_level)
-    elif hath_config.config.get('disable_logging', False):
+        set_file_log_level(numeric_level)
+    elif hath_config.server.get('disable_logging', False):
         logger.info('Setting log level to WARNING as per configuration')
         logging.getLogger().setLevel(logging.WARNING)
-        log_manager.set_file_log_level(logging.WARNING)
+        set_file_log_level(logging.WARNING)
 
-    import cache_manager
+    from hath import cache as cache_manager
 
     missing_db = db.initialize_database()
-    verify_cache = config_manager.Config.verify_cache_requested
+    verify_cache = get_config().verify_cache_requested
     force_rescan = args.force_rescan or missing_db or verify_cache
     if force_rescan and args.force_rescan:
         logger.info('Force rescan requested via --force-rescan')
@@ -266,17 +266,17 @@ def main():
         logger.info('Initialization complete (--stop-after-init); exiting without starting server')
         sys.exit(0)
 
-    import background_manager
+    from hath import lifecycle
 
     stats_proc = _start_stats_process(config['config_dir'], logger)
     start_metrics_flusher(include_gauges=True)
 
-    background_manager.setup_shutdown_handlers()
-    background_manager.start_background_task()
+    lifecycle.setup_shutdown_handlers()
+    lifecycle.start_background_task()
 
     logger.info('Configuration initialized successfully')
 
-    flask_config = hath_config.config
+    flask_config = hath_config.server
     host = flask_config['host']
     port = config['hath_port'] if config['override_port'] else flask_config['port']
 

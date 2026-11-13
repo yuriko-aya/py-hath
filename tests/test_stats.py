@@ -7,8 +7,15 @@ import threading
 import time
 
 import hath.metrics as metrics
-from hath.stats_client import get_dashboard, get_history, get_metrics, get_status, post_stats, wait_for_socket
 from hath.dashboard import render_dashboard_html
+from hath.stats_client import (
+    get_dashboard,
+    get_history,
+    get_metrics,
+    get_status,
+    post_stats,
+    wait_for_socket,
+)
 from hath.stats_server import (
     HISTORY_MAXLEN,
     apply_deltas,

@@ -94,19 +94,19 @@ python wsgi.py
 ## Architecture
 
 ### Modular Design
-The application follows a clean, modular architecture with dedicated managers:
+The application lives in the `hath` package. Process entry points stay at the repository root.
 
-- **`app_manager.py`**: Flask application factory and routing logic
-- **`background_manager.py`**: Background task coordination and execution
-- **`cache_manager.py`**: Cache operations and file management
-- **`config_manager.py`**: Thread-safe configuration management
-- **`db_manager.py`**: SQLite database operations with connection pooling
-- **`download_manager.py`**: Gallery download management with automatic ZIP compression
-- **`event_manager.py`**: Centralized event system for component coordination
-- **`log_manager.py`**: Logging configuration and management
-- **`rpc_manager.py`**: Server communication and RPC handling
-- **`storage_manager.py`**: Storage allocation and cleanup operations
-- **`verification_manager.py`**: Cache integrity verification
+- **`hath/http/`**: Flask application, `/h/` file serving, `/servercmd`, and status proxies
+- **`hath/lifecycle.py`**: Client start, still-alive, shutdown, and Gunicorn reload
+- **`hath/cache.py`**: Cache fetch, streaming, and cleanup
+- **`hath/config.py`**: Config dataclass singleton and `config.json` load/save
+- **`hath/db.py`**: SQLite database operations with connection pooling
+- **`hath/download.py`**: Gallery download management with automatic ZIP compression
+- **`hath/certs.py`**: PKCS#12 download and PEM conversion
+- **`hath/logging.py`**: Logging configuration and management
+- **`hath/rpc.py`**: Server communication and RPC handling
+- **`hath/storage.py`**: Disk-space checks
+- **`hath/verification.py`**: Request authentication and cache integrity checks
 - **`settings.py`**: Application configuration settings and defaults
 
 ### Database Architecture
@@ -237,18 +237,19 @@ Supported proxy types:
 
 ```
 py-hath/
-├── app_manager.py           # Flask application factory and routing
-├── background_manager.py    # Background task coordination
-├── cache_manager.py         # Cache operations and file management
-├── config_manager.py        # Thread-safe configuration management
-├── db_manager.py           # SQLite database operations
-├── download_manager.py     # Gallery download management with ZIP compression
-├── event_manager.py        # Centralized event system
-├── log_manager.py          # Logging configuration
-├── rpc_manager.py          # Server RPC communication
-├── storage_manager.py      # Storage allocation and cleanup
-├── verification_manager.py # Cache integrity verification
-├── zip_compressor.py       # ZIP compression utility for gallery downloads
+├── hath/
+│   ├── http/                # Flask app, /h/, /servercmd, and status routes
+│   ├── cache.py             # Cache operations and file management
+│   ├── certs.py             # PKCS#12 download and PEM conversion
+│   ├── config.py            # Config singleton and config.json
+│   ├── db.py                # SQLite database operations
+│   ├── download.py          # Gallery download management
+│   ├── lifecycle.py         # Startup, still-alive, shutdown, Gunicorn reload
+│   ├── logging.py           # Logging configuration
+│   ├── rpc.py               # Server RPC communication
+│   ├── storage.py           # Disk-space checks
+│   ├── verification.py      # Request authentication
+│   └── zip_compressor.py    # ZIP compression utility for gallery downloads
 ├── run_gunicorn.py         # Gunicorn production server launcher
 ├── wsgi.py                 # WSGI application entry point
 ├── gunicorn.conf.py        # Gunicorn configuration
@@ -314,7 +315,7 @@ The download manager provides automated gallery downloading capabilities for the
 1. **Queue Fetching**: Retrieves pending downloads from the H@H server
 2. **Metadata Parsing**: Extracts gallery information and file lists
 3. **File Downloads**: Downloads each file with hash verification and retry logic
-4. **ZIP Creation**: Compresses completed galleries using `zip_compressor.py`
+4. **ZIP Creation**: Compresses completed galleries using `python -m hath.zip_compressor`
 5. **Cleanup**: Removes original directories after successful compression
 6. **Progress Tracking**: Marks galleries as downloaded to avoid reprocessing
 
@@ -325,8 +326,8 @@ The download manager is triggered via the `start_downloader` server command:
 - Processes all pending downloads until queue is empty
 
 ### Files and Structure
-- **`download_manager.py`**: Main download logic and queue processing
-- **`zip_compressor.py`**: Individual gallery ZIP compression utility
+- **`hath/download.py`**: Main download logic and queue processing
+- **`hath/zip_compressor.py`**: Individual gallery ZIP compression utility
 - **`download/`**: Download directory for gallery files and ZIP archives
 
 ### Configuration
@@ -465,20 +466,19 @@ sqlite3 data/pcache.db "PRAGMA journal_mode;"
 The application follows a modular architecture with clear separation of concerns:
 
 ### Core Modules
-- **`app_manager.py`**: Flask application factory with routing and request handling
-- **`config_manager.py`**: Thread-safe configuration management using singleton pattern
-- **`db_manager.py`**: SQLite database operations with connection pooling and WAL mode
+- **`hath/http/`**: Flask application factory with routing and request handling
+- **`hath/config.py`**: Config dataclass singleton (`get_config()`)
+- **`hath/db.py`**: SQLite database operations with connection pooling and WAL mode
 - **`settings.py`**: Application configuration settings and defaults
 
-### Manager Modules
-- **`background_manager.py`**: Coordinates background tasks and worker processes
-- **`cache_manager.py`**: Handles cache operations, file management, and cleanup
-- **`download_manager.py`**: Manages gallery downloads, ZIP compression, and queue processing
-- **`event_manager.py`**: Centralized event system for inter-component communication
-- **`log_manager.py`**: Logging configuration with file rotation and structured output
-- **`rpc_manager.py`**: Server communication, RPC calls, and protocol handling
-- **`storage_manager.py`**: Storage allocation, monitoring, and cleanup operations
-- **`verification_manager.py`**: Cache integrity verification and validation
+### Package Modules
+- **`hath/lifecycle.py`**: Coordinates background tasks, shutdown, and Gunicorn reload
+- **`hath/cache.py`**: Handles cache operations, file management, and cleanup
+- **`hath/download.py`**: Manages gallery downloads, ZIP compression, and queue processing
+- **`hath/logging.py`**: Logging configuration with file output and structured logs
+- **`hath/rpc.py`**: Server communication, RPC calls, and protocol handling
+- **`hath/storage.py`**: Disk-space checks for the cache directory
+- **`hath/verification.py`**: Request authentication and cache integrity checks
 
 ### Key Features
 - **Thread Safety**: All managers are designed for multi-threaded operation

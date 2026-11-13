@@ -2,15 +2,6 @@
 
 Most items from the initial review have been implemented in v0.4.0. See [CHANGELOG.md](CHANGELOG.md).
 
-## Remaining / future work
-
-- [ ] **Full package layout** — Move manager modules into `hath/` (currently only shared utilities live there)
-- [ ] **Explicit Config singleton instance** — Replace class-level state bag with a testable dataclass singleton
-- [ ] **Broader integration tests** — Mock RPC for `/h/` cache miss and `/servercmd/` flows
-- [ ] **Prometheus metrics export** — Optional `/metrics` in Prometheus text format
-- [ ] **Additional config hot-reload** — Apply throttle and other safe server settings without restart
-- [ ] **Database migration runner** — Extend `schema_version` when schema changes beyond v1
-
 ## Completed (0.4.0)
 
 - [x] First-run credential bug, `disable_ip_check` default, path hardcoding
@@ -20,3 +11,8 @@ Most items from the initial review have been implemented in v0.4.0. See [CHANGEL
 - [x] `pyproject.toml`, dev dependencies, deployment examples
 - [x] Centralized version/HTTP client, validation, metrics, `/health`
 - [x] Remove unused deps, README sync, ARCHITECTURE/CONTRIBUTING/CHANGELOG docs
+- [x] **Full package layout** — Manager modules live in `hath/`
+- [x] **Explicit Config singleton instance** — Dataclass singleton via `get_config()` / `replace_config()`
+- [x] **Broader integration tests** — Mocked `/h/` cache hit and miss, and `/servercmd/` flows
+- [x] **Prometheus metrics export** — `GET /metrics/<actkey>` proxies Prometheus text from the stats socket
+- [x] **Additional config hot-reload** — Throttle, disk limits, and log level follow a newer `config.json` without restart

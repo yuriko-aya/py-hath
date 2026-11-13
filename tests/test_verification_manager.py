@@ -1,13 +1,12 @@
 import hashlib
 import time
 
-import config_manager
-import verification_manager
+from hath import verification as verification_manager
+from hath.config import Config, replace_config
 
 
 def test_verify_servercmd_key():
-    config_manager.Config.client_id = "12345"
-    config_manager.Config.client_key = "secret"
+    replace_config(Config(client_id="12345", client_key="secret"))
     time_param = "1000000"
     command = "still_alive"
     additional = ""
@@ -17,7 +16,7 @@ def test_verify_servercmd_key():
 
 
 def test_verify_h_endpoint_auth_valid():
-    config_manager.Config.client_key = "secret"
+    replace_config(Config(client_key="secret"))
     keystamp = str(int(time.time()))
     file_id = "abc123def456"
     hash_data = f"{keystamp}-{file_id}-secret-hotlinkthis"
@@ -26,6 +25,6 @@ def test_verify_h_endpoint_auth_valid():
 
 
 def test_verify_h_endpoint_auth_expired():
-    config_manager.Config.client_key = "secret"
+    replace_config(Config(client_key="secret"))
     keystamp = str(int(time.time()) - 1000)
     assert not verification_manager.verify_h_endpoint_auth(keystamp, "0000000000", "abc")
